@@ -1,0 +1,13 @@
+whitespace = { " " | "\t" | "\r" | "\n" }
+comment = { line_comment | block_comment }
+line_comment = { "--" ~ (!"\n" ~ ANY)* ~ ("\n" | EOI) }
+block_comment = @{ "/*" ~ (block_comment | (!"*/" ~ ANY))* ~ "*/" }
+
+string = @{ "'" ~ (!"'" ~ ANY | "''" )* ~ "'" }
+quoted_identifier = @{ "\"" ~ (!"\"" ~ ANY | "\"\"")* ~ "\"" }
+e_string = @{ ("E"|"e") ~ "'" ~ (!("'" | "\\") ~ ANY | "\\" ~ ANY)* ~ "'" }
+raw_string = @{ "$$" ~ (!("$$") ~ ANY)* ~ "$$" }
+
+token = @{ string | quoted_identifier | e_string | raw_string | whitespace | comment }
+query = { (token | (!(";" | "/*" | "\"" | ("E"|"e") ~ "'" | "'" | "$$") ~ ANY))* ~ ";" }
+queries = { SOI ~ query* ~ (comment | whitespace)* ~ EOI } 

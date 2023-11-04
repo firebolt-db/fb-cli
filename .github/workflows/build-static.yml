@@ -1,0 +1,99 @@
+name: Build Static Binary
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    branches:
+      - main
+
+env:
+  MUSL_CROSS_VERSION: "20250520"
+
+jobs:
+  build-static:
+    strategy:
+      matrix:
+        arch: [ x86_64, aarch64 ]
+    name: Build Static Binary for ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        show-progress: 'false'
+        fetch-depth: 0
+
+    - name: Install musl tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools
+
+    - name: Download musl-cross toolchain
+      if: matrix.arch == 'aarch64'
+      run: |
+        TARGET_ARCH="aarch64-unknown-linux-musl"
+        TOOLCHAIN_URL="https://github.com/cross-tools/musl-cross/releases/download/${MUSL_CROSS_VERSION}/${TARGET_ARCH}.tar.xz"
+
+        sudo mkdir -p /opt/x-tools
+        wget -qO- "${TOOLCHAIN_URL}" | sudo tar -xJf - -C /opt/x-tools
+
+        # this symlink is necessary so that rust compiler will find musl GCC
+        sudo ln -s /opt/x-tools/${TARGET_ARCH}/bin/aarch64-unknown-linux-musl-gcc \
+          /usr/local/bin/aarch64-linux-musl-gcc
+
+        echo "/opt/x-tools/${TARGET_ARCH}/bin" >> $GITHUB_PATH
+
+        echo "STRIP_PREFIX=aarch64-unknown-linux-musl-" >> "$GITHUB_ENV"
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: ${{ matrix.arch }}-unknown-linux-musl
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.arch }}-cargo-
+
+    - name: Build static binary
+      run: |
+        cargo build --release --target "${{ matrix.arch }}-unknown-linux-musl" --locked
+
+    - name: Verify static linking with ldd
+      run: |
+        BINARY_PATH="target/${{ matrix.arch }}-unknown-linux-musl/release/fb"
+
+        if ldd "$BINARY_PATH" 2>&1 | grep -qF "not a dynamic executable"; then
+          echo "✅ Binary '$BINARY_PATH' is statically linked." >> "$GITHUB_STEP_SUMMARY"
+        elif ldd "$BINARY_PATH" 2>&1 | grep -qF "statically linked"; then
+          echo "✅ Binary '$BINARY_PATH' is statically linked." >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "❌ Binary '$BINARY_PATH' is NOT statically linked:" >> "$GITHUB_STEP_SUMMARY"
+          ldd "$BINARY_PATH" 1>&2
+          exit 1
+        fi
+
+    - name: Strip binary
+      run: |
+        ${STRIP_PREFIX}strip "target/${{ matrix.arch }}-unknown-linux-musl/release/fb"
+
+    - name: Move binary into artifacts directory
+      run: |
+        mkdir -p artifacts
+        cp "target/${{ matrix.arch }}-unknown-linux-musl/release/fb" "artifacts/fb-linux-static-${{ matrix.arch }}"
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: fb-linux-static-${{ matrix.arch }}
+        path: artifacts/fb-linux-static-${{ matrix.arch }}
+        retention-days: 7
