@@ -47,7 +47,7 @@ Positional arguments:
 Optional arguments:
   -c, --command COMMAND    Run a single command and exit
   -C, --core               Preset of settings to connect to Firebolt Core
-  -h, --host HOSTNAME      Hostname to connect to
+  -h, --host HOSTNAME      Hostname (and port) to connect to
   -d, --database DATABASE  Database name to use
   -f, --format FORMAT      Output format (e.g., TabSeparatedWithNames, PSQL, JSONLines_Compact, Vertical, ...)
   -e, --extra EXTRA        Extra settings in the form --extra <name>=<value>
