@@ -27,9 +27,14 @@ jobs:
             "${{ github.api_url }}/repos/${{ github.repository }}/releases/latest")
 
           TAG_NAME=$(echo "$LATEST_RELEASE_JSON" | jq -r .tag_name)
-          # remove the leading 'v' from the tag name
-          echo "latest_version=${TAG_NAME:1}" >> "$GITHUB_OUTPUT"
-          echo "🕰️ Latest released version: $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TAG_NAME" = "null" ]; then
+            echo "ERROR: no released versions exist" 1>&2
+            exit 1
+          else
+            # remove the leading 'v' from the tag name
+            echo "latest_version=${TAG_NAME:1}" >> "$GITHUB_OUTPUT"
+            echo "🕰️ Latest released version: $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Get current version from Cargo.toml
         id: main_branch
@@ -41,8 +46,8 @@ jobs:
       - name: Compare versions
         id: compare_versions
         run: |
-          MAIN_BRANCH_VERSION="${{ steps.main_branch.outputs.version }}"
           LATEST_VERSION="${{ steps.releases.outputs.latest_version }}"
+          MAIN_BRANCH_VERSION="${{ steps.main_branch.outputs.version }}"
 
           # Use sort -V to compare the versions numerically.
           # If MAIN_BRANCH_VERSION is truly greater, it will be the second item
