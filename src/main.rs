@@ -56,12 +56,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut buffer: String = String::new();
     loop {
-        let prompt = if !buffer.trim_start().is_empty() { "~> " } else { "=> " };
+        let prompt = if !buffer.trim_start().is_empty() {
+            "~> "
+        } else if context.args.extra.iter().any(|arg| arg.starts_with("transaction_id=")) {
+            "*> "
+        } else {
+            "=> "
+        };
         let readline = rl.readline(prompt);
 
         match readline {
             Ok(line) => {
                 buffer += line.as_str();
+
+                if buffer.trim() == "quit" || buffer.trim() == "exit" {
+                    break;
+                }
+
                 buffer += "\n";
                 if !line.is_empty() {
                     let queries = try_split_queries(&buffer).unwrap_or_default();

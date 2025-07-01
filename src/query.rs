@@ -6,12 +6,12 @@ use std::time::Instant;
 use tokio::{select, signal, task};
 use tokio_util::sync::CancellationToken;
 
-use crate::USER_AGENT;
-use crate::FIREBOLT_PROTOCOL_VERSION;
 use crate::args::normalize_extras;
 use crate::auth::authenticate_service_account;
 use crate::context::Context;
 use crate::utils::spin;
+use crate::FIREBOLT_PROTOCOL_VERSION;
+use crate::USER_AGENT;
 
 // Set parameters via query
 pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -44,10 +44,6 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
 
     context.update_url();
 
-    if !context.args.concise && !context.args.hide_pii {
-        eprintln!("URL: {}", context.url);
-    }
-
     return Ok(true);
 }
 
@@ -67,10 +63,6 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
 
         context.update_url();
 
-        if !context.args.concise && !context.args.hide_pii {
-            eprintln!("URL: {}", context.url);
-        }
-
         return Ok(true);
     }
 
@@ -81,10 +73,18 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
 pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<dyn std::error::Error>> {
     // Handle set/unset commands
     if set_args(context, &query_text)? {
+        if !context.args.concise && !context.args.hide_pii {
+            eprintln!("URL: {}", context.url);
+        }
+
         return Ok(());
     }
 
     if unset_args(context, &query_text)? {
+        if !context.args.concise && !context.args.hide_pii {
+            eprintln!("URL: {}", context.url);
+        }
+
         return Ok(());
     }
 
@@ -150,37 +150,45 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
             let mut maybe_request_id: Option<String> = None;
             match response {
                 Ok(resp) => {
-                    if let Some(header) = resp.headers().get("X-REQUEST-ID") {
-                        maybe_request_id = header.to_str().map_or(None, |l| Some(String::from(l)));
-                    }
-                    if let Some(header) = resp.headers().get("firebolt-update-parameters") {
-                        set_args(context, format!("set {}", header.to_str().unwrap()).as_str())?;
-                    }
-                    if let Some(header) = resp.headers().get("firebolt-remove-parameters") {
-                        unset_args(context, format!("unset {}", header.to_str().unwrap()).as_str())?;
-                    }
-                    if let Some(header) = resp.headers().get("firebolt-update-endpoint") {
-                        let header_str = header.to_str().unwrap();
-                        // Split the header at the '?' character
-                        if let Some(pos) = header_str.find('?') {
-                            // Extract base URL and query part
-                            let base_url = &header_str[..pos];
-                            let query_part = &header_str[pos+1..];
+                    let mut updated_url = false;
+                    for (header, value) in resp.headers() {
+                        if header == "firebolt-remove-parameters" {
+                            unset_args(context, format!("unset {}", value.to_str()?).as_str())?;
+                            updated_url = true;
+                        } else if header == "firebolt-update-parameters" {
+                            set_args(context, format!("set {}", value.to_str()?).as_str())?;
+                            updated_url = true;
+                        } else if header == "X-REQUEST-ID" {
+                            maybe_request_id = value.to_str().map_or(None, |l| Some(String::from(l)));
+                            updated_url = true;
+                        } else if header == "firebolt-update-endpoint" {
+                            let header_str = value.to_str()?;
+                            // Split the header at the '?' character
+                            if let Some(pos) = header_str.find('?') {
+                                // Extract base URL and query part
+                                let base_url = &header_str[..pos];
+                                let query_part = &header_str[pos+1..];
 
-                            // Update the context URL with just the base part
-                            context.args.host = base_url.to_string();
+                                // Update the context URL with just the base part
+                                context.args.host = base_url.to_string();
 
-                            // Process each query parameter
-                            for param in query_part.split('&') {
-                                if !param.is_empty() {
-                                    set_args(context, format!("set {};", param).as_str())?;
+                                // Process each query parameter
+                                for param in query_part.split('&') {
+                                    if !param.is_empty() {
+                                        set_args(context, format!("set {};", param).as_str())?;
+                                    }
                                 }
+                            } else {
+                                // No query parameters, just set the URL
+                                context.args.host = header_str.to_string();
                             }
-                        } else {
-                            // No query parameters, just set the URL
-                            context.args.host = header_str.to_string();
+                            updated_url = true;
                         }
                     }
+                    if updated_url &&  !context.args.concise && !context.args.hide_pii {
+                        eprintln!("URL: {}", context.url);
+                    }
+
                     // on stdout, on purpose
                     println!("{}", resp.text().await?);
                 }
