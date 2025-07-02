@@ -122,7 +122,13 @@ pub async fn authenticate_service_account(context: &mut Context) -> Result<(), B
                 );
             }
         }
-        Err(error) => return Err(format!("Failed to authenticate: {:?}", error).into()),
+        Err(error) => {
+            if context.args.verbose {
+                return Err(format!("Failed to authenticate: {:?}", error).into());
+            }
+
+            return Err(format!("Failed to authenticate: {}", error.to_string()).into());
+        }
     };
 
     return Ok(());
