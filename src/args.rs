@@ -164,7 +164,7 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         }
         match fs::read_to_string(&jwt_path) {
             Ok(jwt) => args.jwt = String::from(jwt.trim()),
-            Err(error) => eprintln!("Failed to read jwt from {:?}: {:?}", &jwt_path, error),
+            Err(error) => eprintln!("Failed to read jwt from {:?}: {}", &jwt_path, error.to_string()),
         }
     }
 

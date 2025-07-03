@@ -192,7 +192,13 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     // on stdout, on purpose
                     println!("{}", resp.text().await?);
                 }
-                Err(error) => eprintln!("Failed to send the request: {:?}", error),
+                Err(error) => {
+                    if context.args.verbose {
+                        eprintln!("Failed to send the request: {:?}", error);
+                    } else {
+                        eprintln!("Failed to send the request: {}", error.to_string());
+                    }
+                },
             };
 
             if !context.args.concise {
