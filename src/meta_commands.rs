@@ -5,37 +5,37 @@ use once_cell::sync::Lazy;
 // Handle meta-commands (backslash commands)
 pub fn handle_meta_command(context: &mut Context, command: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // Handle \set PROMPT1 command
-    if let Some(prompt) = parse_set_prompt1(command) {
+    if let Some(prompt) = parse_set_prompt(command, "PROMPT1") {
         context.set_prompt1(prompt);
         return Ok(true);
     }
 
     // Handle \set PROMPT2 command
-    if let Some(prompt) = parse_set_prompt2(command) {
+    if let Some(prompt) = parse_set_prompt(command, "PROMPT2") {
         context.set_prompt2(prompt);
         return Ok(true);
     }
 
     // Handle \set PROMPT3 command
-    if let Some(prompt) = parse_set_prompt3(command) {
+    if let Some(prompt) = parse_set_prompt(command, "PROMPT3") {
         context.set_prompt3(prompt);
         return Ok(true);
     }
 
     // Handle \unset PROMPT1 command
-    if parse_unset_prompt1(command) {
+    if parse_unset_prompt(command, "PROMPT1") {
         context.prompt1 = None;
         return Ok(true);
     }
 
     // Handle \unset PROMPT2 command
-    if parse_unset_prompt2(command) {
+    if parse_unset_prompt(command, "PROMPT2") {
         context.prompt2 = None;
         return Ok(true);
     }
 
     // Handle \unset PROMPT3 command
-    if parse_unset_prompt3(command) {
+    if parse_unset_prompt(command, "PROMPT3") {
         context.prompt3 = None;
         return Ok(true);
     }
@@ -43,91 +43,44 @@ pub fn handle_meta_command(context: &mut Context, command: &str) -> Result<bool,
     Ok(false)
 }
 
-// Parse \set PROMPT1 'value' command
-fn parse_set_prompt1(command: &str) -> Option<String> {
+// Generic function to parse \set PROMPT command
+fn parse_set_prompt(command: &str, prompt_type: &str) -> Option<String> {
     static SET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\set\s+PROMPT1\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap()
+        Regex::new(r#"(?i)^\s*\\set\s+(\w+)\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap()
     });
 
     if let Some(captures) = SET_PROMPT_RE.captures(command) {
-        // Check which capture group matched
-        if let Some(prompt) = captures.get(1) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(2) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(3) {
-            return Some(prompt.as_str().to_string());
+        // Check if the prompt type matches
+        if let Some(cmd_prompt_type) = captures.get(1) {
+            if cmd_prompt_type.as_str().eq_ignore_ascii_case(prompt_type) {
+                // Check which capture group matched for the value
+                if let Some(prompt) = captures.get(2) {
+                    return Some(prompt.as_str().to_string());
+                } else if let Some(prompt) = captures.get(3) {
+                    return Some(prompt.as_str().to_string());
+                } else if let Some(prompt) = captures.get(4) {
+                    return Some(prompt.as_str().to_string());
+                }
+            }
         }
     }
 
     None
 }
 
-// Parse \set PROMPT2 'value' command
-fn parse_set_prompt2(command: &str) -> Option<String> {
-    static SET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\set\s+PROMPT2\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap()
+// Generic function to parse \unset PROMPT command
+fn parse_unset_prompt(command: &str, prompt_type: &str) -> bool {
+    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)^\s*\\unset\s+(\w+)\s*$"#).unwrap()
     });
 
-    if let Some(captures) = SET_PROMPT_RE.captures(command) {
-        // Check which capture group matched
-        if let Some(prompt) = captures.get(1) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(2) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(3) {
-            return Some(prompt.as_str().to_string());
+    if let Some(captures) = UNSET_PROMPT_RE.captures(command) {
+        if let Some(cmd_prompt_type) = captures.get(1) {
+            return cmd_prompt_type.as_str().eq_ignore_ascii_case(prompt_type);
         }
     }
 
-    None
-}
-
-// Parse \set PROMPT3 'value' command
-fn parse_set_prompt3(command: &str) -> Option<String> {
-    static SET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\set\s+PROMPT3\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap()
-    });
-
-    if let Some(captures) = SET_PROMPT_RE.captures(command) {
-        // Check which capture group matched
-        if let Some(prompt) = captures.get(1) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(2) {
-            return Some(prompt.as_str().to_string());
-        } else if let Some(prompt) = captures.get(3) {
-            return Some(prompt.as_str().to_string());
-        }
-    }
-
-    None
-}
-
-// Parse \unset PROMPT1 command
-fn parse_unset_prompt1(command: &str) -> bool {
-    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\unset\s+PROMPT1\s*$"#).unwrap()
-    });
-
-    UNSET_PROMPT_RE.is_match(command)
-}
-
-// Parse \unset PROMPT2 command
-fn parse_unset_prompt2(command: &str) -> bool {
-    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\unset\s+PROMPT2\s*$"#).unwrap()
-    });
-
-    UNSET_PROMPT_RE.is_match(command)
-}
-
-// Parse \unset PROMPT3 command
-fn parse_unset_prompt3(command: &str) -> bool {
-    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\unset\s+PROMPT3\s*$"#).unwrap()
-    });
-
-    UNSET_PROMPT_RE.is_match(command)
+    false
 }
 
 #[cfg(test)]
@@ -336,5 +289,25 @@ mod tests {
         assert_eq!(context.prompt1, Some("prompt1> ".to_string()));
         assert_eq!(context.prompt2, None);
         assert_eq!(context.prompt3, Some("prompt3> ".to_string()));
+    }
+
+    #[test]
+    fn test_case_insensitive_prompt_types() {
+        let args = get_args().unwrap();
+        let mut context = Context::new(args);
+        
+        // Test case insensitive prompt type matching
+        let command1 = r#"\set prompt1 'test1> '"#;
+        let command2 = r#"\set Prompt2 'test2> '"#;
+        let command3 = r#"\set PROMPT3 'test3> '"#;
+        
+        handle_meta_command(&mut context, command1).unwrap();
+        handle_meta_command(&mut context, command2).unwrap();
+        handle_meta_command(&mut context, command3).unwrap();
+        
+        // Verify all prompts are set correctly regardless of case
+        assert_eq!(context.prompt1, Some("test1> ".to_string()));
+        assert_eq!(context.prompt2, Some("test2> ".to_string()));
+        assert_eq!(context.prompt3, Some("test3> ".to_string()));
     }
 }
