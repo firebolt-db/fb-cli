@@ -13,16 +13,31 @@ pub struct Context {
     pub args: Args,
     pub url: String,
     pub sa_token: Option<ServiceAccountToken>,
+    pub prompt1: Option<String>,
+    pub prompt2: Option<String>,
+    pub prompt3: Option<String>,
 }
 
 impl Context {
     pub fn new(args: Args) -> Self {
         let url = get_url(&args);
-        Self { args, url, sa_token: None }
+        Self { args, url, sa_token: None, prompt1: None, prompt2: None, prompt3: None }
     }
 
     pub fn update_url(&mut self) {
         self.url = get_url(&self.args);
+    }
+
+    pub fn set_prompt1(&mut self, prompt: String) {
+        self.prompt1 = Some(prompt);
+    }
+
+    pub fn set_prompt2(&mut self, prompt: String) {
+        self.prompt2 = Some(prompt);
+    }
+
+    pub fn set_prompt3(&mut self, prompt: String) {
+        self.prompt3 = Some(prompt);
     }
 }
 

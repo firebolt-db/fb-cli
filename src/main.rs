@@ -3,12 +3,14 @@ use rustyline::{config::Configurer, error::ReadlineError, Cmd, DefaultEditor, Ev
 mod args;
 mod auth;
 mod context;
+mod meta_commands;
 mod query;
 mod utils;
 
 use args::get_args;
 use auth::maybe_authenticate;
 use context::Context;
+use meta_commands::handle_meta_command;
 use query::{query, try_split_queries};
 use utils::history_path;
 
@@ -57,11 +59,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer: String = String::new();
     loop {
         let prompt = if !buffer.trim_start().is_empty() {
-            "~> "
+            // Continuation prompt (PROMPT2)
+            if let Some(custom_prompt) = &context.prompt2 {
+                custom_prompt.as_str()
+            } else {
+                "~> "
+            }
         } else if context.args.extra.iter().any(|arg| arg.starts_with("transaction_id=")) {
-            "*> "
+            // Transaction prompt (PROMPT3)
+            if let Some(custom_prompt) = &context.prompt3 {
+                custom_prompt.as_str()
+            } else {
+                "*> "
+            }
         } else {
-            "=> "
+            // Normal prompt (PROMPT1)
+            if let Some(custom_prompt) = &context.prompt1 {
+                custom_prompt.as_str()
+            } else {
+                "=> "
+            }
         };
         let readline = rl.readline(prompt);
 
@@ -75,6 +92,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 buffer += "\n";
                 if !line.is_empty() {
+                    // Check if this is a meta-command (backslash command)
+                    if line.trim().starts_with('\\') {
+                        if let Err(e) = handle_meta_command(&mut context, line.trim()) {
+                            eprintln!("Error processing meta-command: {}", e);
+                        }
+                        buffer.clear();
+                        continue;
+                    }
+
                     let queries = try_split_queries(&buffer).unwrap_or_default();
 
                     if !queries.is_empty() {
