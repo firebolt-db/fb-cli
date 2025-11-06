@@ -66,9 +66,6 @@ pub struct Args {
     #[serde(default)]
     pub jwt_from_file: bool,
 
-    #[options(no_short, help = "Firebolt bearer token for authentication")]
-    #[serde(skip_serializing, skip_deserializing)]
-    pub bearer: String,
 
     #[options(
         no_short,
