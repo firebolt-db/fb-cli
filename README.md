@@ -56,7 +56,6 @@ Optional arguments:
   --sa-id SA-ID            Service Account ID for OAuth authentication
   --sa-secret SA-SECRET    Service Account Secret for OAuth authentication
   --jwt-from-file          Load JWT from file (~/.firebolt/jwt)
-  --bearer BEARER          Firebolt bearer token for authentication
   --oauth-env OAUTH-ENV    OAuth environment to use (e.g., 'app' or 'staging'). Used for Service Account authentication (default: staging)
   -v, --verbose            Enable extra verbose output
   --concise                Suppress time statistics in output
@@ -153,10 +152,10 @@ Read more about getting service accounts [here](https://docs.firebolt.io/guides/
 Specify:
 - host;
 - account_id;
-- bearer token (take it from browser);
+- JWT token (can be obtained from browser or other authentication methods);
 
 ```
-➤  fb --host api.us-east-1.app.firebolt.io --verbose --extra account_id=12312312312 --bearer 'eyJhbGciOiJSUzI1NiI...'
+➤  fb --host api.us-east-1.app.firebolt.io --verbose --extra account_id=12312312312 --jwt 'eyJhbGciOiJSUzI1NiI...'
 
 => show engines
 URL: https://api.us-east-1.app.firebolt.io/?database=db_1&account_id=12312312&output_format=JSON&advanced_mode=1
