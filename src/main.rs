@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Press Ctrl+D to exit.");
     }
     let mut buffer: String = String::new();
+    let mut has_error = false;
     loop {
         let prompt = if !is_tty {
             // No prompt when stdout is not a terminal (e.g., piped)
@@ -115,7 +116,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         rl.append_history(&history_path)?;
 
                         for q in queries {
-                            let _ = query(&mut context, q).await;
+                            if query(&mut context, q).await.is_err() {
+                                has_error = true;
+                            }
                         }
 
                         buffer.clear();
@@ -135,7 +138,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             for q in queries {
                                 rl.add_history_entry(q.trim())?;
                                 rl.append_history(&history_path)?;
-                                let _ = query(&mut context, q).await;
+                                if query(&mut context, q).await.is_err() {
+                                    has_error = true;
+                                }
                             }
                         }
                     }
@@ -144,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(err) => {
                 eprintln!("Error: {:?}", err);
+                has_error = true;
                 break;
             }
         }
@@ -153,5 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Saved history to {:?}", history_path)
     }
 
-    Ok(())
+    if has_error {
+        Err("One or more queries failed".into())
+    } else {
+        Ok(())
+    }
 }
