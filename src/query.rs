@@ -196,7 +196,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     let body = resp.text().await?;
 
                     // on stdout, on purpose
-                    println!("{}", body);
+                    print!("{}", body);
 
                     if !status.is_success() {
                         query_failed = true;
