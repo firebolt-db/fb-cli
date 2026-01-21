@@ -26,7 +26,7 @@ fn test_set_format() {
     // First set format to TSV
     let (success, stdout, _) = run_fb(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 42;"]);
     assert!(success);
-    assert_eq!(stdout, "?column?\nint\n42\n\n");
+    assert_eq!(stdout, "?column?\nint\n42\n");
 }
 
 #[test]
@@ -88,16 +88,17 @@ fn test_params_escaping() {
 
     assert!(output.status.success());
     let mut lines = stdout.lines();
+    // First query result
     assert_eq!(lines.next().unwrap(), "?column?");
-    lines.next();
+    assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "a=}&");
-    lines.next();
+    // Second query result
     assert_eq!(lines.next().unwrap(), "?column?");
-    lines.next();
+    assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "a=}&");
-    lines.next();
+    // Third query result
     assert_eq!(lines.next().unwrap(), "?column?");
-    lines.next();
+    assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "b=}&");
 }
 
