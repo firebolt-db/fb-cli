@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::Command;
+use serde_json;
 
 fn run_fb(args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_fb"))
@@ -204,4 +205,33 @@ fn test_exiting() {
     lines.next();
     assert_eq!(lines.next().unwrap(), "42");
     lines.next();
+}
+
+#[test]
+fn test_json_output_fully_parseable() {
+    // Test that JSON output on stdout is fully parseable, even when stats are printed to stderr
+    let (success, stdout, stderr) = run_fb(&["--core", "-f", "JSONLines_Compact", "SELECT 42 AS value"]);
+
+    assert!(success);
+
+    // stderr should contain stats
+    assert!(stderr.contains("Time:"), "stderr should contain Time:");
+
+    // stdout should be valid JSON Lines - each non-empty line should be valid JSON
+    let trimmed_stdout = stdout.trim();
+    assert!(!trimmed_stdout.is_empty(), "stdout should not be empty");
+
+    for line in trimmed_stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
+        assert!(
+            parsed.is_ok(),
+            "Each line of stdout should be valid JSON, but got parse error: {:?}\nline was: {}\nfull stdout was: {}",
+            parsed.err(),
+            line,
+            stdout
+        );
+    }
 }

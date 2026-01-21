@@ -1,4 +1,5 @@
 use rustyline::{config::Configurer, error::ReadlineError, Cmd, DefaultEditor, EventHandler, KeyCode, KeyEvent, Modifiers};
+use std::io::IsTerminal;
 
 mod args;
 mod auth;
@@ -41,24 +42,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
+
     let mut rl = DefaultEditor::new()?;
     let history_path = history_path()?;
     rl.set_max_history_size(10_000)?;
     if rl.load_history(&history_path).is_err() {
-        eprintln!("No previous history");
+        if is_tty {
+            eprintln!("No previous history");
+        }
     } else if context.args.verbose {
         eprintln!("Loaded history from {:?} and set max_history_size = 10'000", history_path)
     }
 
     rl.bind_sequence(KeyEvent(KeyCode::Char('o'), Modifiers::CTRL), EventHandler::Simple(Cmd::Newline));
 
-    if !context.args.concise {
+    if is_tty {
         eprintln!("Press Ctrl+D to exit.");
     }
-
     let mut buffer: String = String::new();
     loop {
-        let prompt = if !buffer.trim_start().is_empty() {
+        let prompt = if !is_tty {
+            // No prompt when stdout is not a terminal (e.g., piped)
+            ""
+        } else if !buffer.trim_start().is_empty() {
             // Continuation prompt (PROMPT2)
             if let Some(custom_prompt) = &context.prompt2 {
                 custom_prompt.as_str()

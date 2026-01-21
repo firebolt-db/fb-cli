@@ -203,12 +203,11 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
             if !context.args.concise {
                 let elapsed = format!("{:?}", elapsed / 100000 * 100000);
-                print!("Time: {elapsed}\n");
+                eprintln!("Time: {elapsed}");
                 if let Some(request_id) = maybe_request_id {
-                    print!("Request Id: {request_id}\n");
+                    eprintln!("Request Id: {request_id}");
                 }
-                // on stdout, on purpose
-                println!("")
+                eprintln!("")
             }
         }
     };

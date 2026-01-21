@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::stdout;
+use std::io::stderr;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -46,20 +46,20 @@ pub fn format_remaining_time(time: SystemTime, maybe_more: String) -> Result<Str
 pub async fn spin(token: CancellationToken) {
     let spins = ['─', '\\', '|', '/'];
     let mut it = 0;
-    print!("{}", spins[it]);
+    eprint!("{}", spins[it]);
     it += 1;
-    let _ = stdout().flush();
+    let _ = stderr().flush();
     loop {
         select! {
             _ = token.cancelled() => {
-                print!("\x08 \x08");
-                let _ = stdout().flush();
+                eprint!("\x08 \x08");
+                let _ = stderr().flush();
                 return;
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
-                print!("\x08{}", spins[it]);
+                eprint!("\x08{}", spins[it]);
                 it = (it + 1) % spins.len();
-                let _ = stdout().flush();
+                let _ = stderr().flush();
             }
         };
     }
