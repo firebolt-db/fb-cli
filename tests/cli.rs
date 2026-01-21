@@ -235,3 +235,55 @@ fn test_json_output_fully_parseable() {
         );
     }
 }
+
+#[test]
+fn test_exit_code_on_connection_error() {
+    // Test that exit code is non-zero when server is not available
+    let (success, _, stderr) = run_fb(&["--host", "localhost:59999", "--concise", "SELECT 1"]);
+
+    assert!(!success, "Exit code should be non-zero when connection fails");
+    assert!(
+        stderr.contains("Failed to send the request"),
+        "stderr should contain connection error message, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_exit_code_on_query_error() {
+    // Test that exit code is non-zero when query returns an error (e.g., syntax error)
+    let (success, stdout, _) = run_fb(&["--core", "--concise", "SELEC INVALID SYNTAX"]);
+
+    assert!(!success, "Exit code should be non-zero when query fails");
+    // The server should return an error message in the response
+    assert!(
+        stdout.to_lowercase().contains("error") || stdout.to_lowercase().contains("exception"),
+        "stdout should contain error message from server, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_exit_code_on_query_error_interactive() {
+    // Test that exit code is non-zero when any query fails in interactive mode
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
+        .args(&["--core", "--concise"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "SELECT 1;").unwrap(); // Valid query
+    writeln!(stdin, "SELEC INVALID;").unwrap(); // Invalid query
+    writeln!(stdin, "SELECT 2;").unwrap(); // Valid query
+    drop(stdin);
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "Exit code should be non-zero when any query in session fails"
+    );
+}

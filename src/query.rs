@@ -130,6 +130,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         }))
     };
 
+    let mut query_failed = false;
+
     select! {
         _ = signal::ctrl_c() => {
             finish_token.cancel();
@@ -139,6 +141,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
             if !context.args.concise {
                 eprintln!("^C");
             }
+            query_failed = true;
         }
         response = async_resp => {
             let elapsed = start.elapsed();
@@ -189,8 +192,15 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         eprintln!("URL: {}", context.url);
                     }
 
+                    let status = resp.status();
+                    let body = resp.text().await?;
+
                     // on stdout, on purpose
-                    println!("{}", resp.text().await?);
+                    println!("{}", body);
+
+                    if !status.is_success() {
+                        query_failed = true;
+                    }
                 }
                 Err(error) => {
                     if context.args.verbose {
@@ -198,6 +208,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     } else {
                         eprintln!("Failed to send the request: {}", error.to_string());
                     }
+                    query_failed = true;
                 },
             };
 
@@ -212,7 +223,11 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         }
     };
 
-    Ok(())
+    if query_failed {
+        Err("Query failed".into())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Parser)]
@@ -247,16 +262,18 @@ mod tests {
     use crate::args::get_args;
 
     #[tokio::test]
-    async fn test_query() {
+    async fn test_query_connection_error() {
         let mut args = get_args().unwrap();
         args.host = "localhost:8123".to_string();
         args.database = "test_db".to_string();
+        args.concise = true; // suppress output
 
         let mut context = Context::new(args);
         let query_text = "select 42".to_string();
 
+        // Query should fail when server is not available
         let result = query(&mut context, query_text).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     #[test]
