@@ -1,4 +1,5 @@
 use crate::args::{get_url, Args};
+use crate::table_renderer::ParsedResult;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -16,12 +17,21 @@ pub struct Context {
     pub prompt1: Option<String>,
     pub prompt2: Option<String>,
     pub prompt3: Option<String>,
+    pub last_result: Option<ParsedResult>,
 }
 
 impl Context {
     pub fn new(args: Args) -> Self {
         let url = get_url(&args);
-        Self { args, url, sa_token: None, prompt1: None, prompt2: None, prompt3: None }
+        Self {
+            args,
+            url,
+            sa_token: None,
+            prompt1: None,
+            prompt2: None,
+            prompt3: None,
+            last_result: None,
+        }
     }
 
     pub fn update_url(&mut self) {
@@ -56,5 +66,6 @@ mod tests {
         assert!(context.url.contains("localhost:8123"));
         assert!(context.url.contains("database=test_db"));
         assert!(context.sa_token.is_none());
+        assert!(context.last_result.is_none());
     }
 }

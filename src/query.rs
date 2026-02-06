@@ -200,6 +200,9 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     if context.args.should_render_table() {
                         match table_renderer::parse_jsonlines_compact(&body) {
                             Ok(parsed) => {
+                                // Store result for interactive viewing
+                                context.last_result = Some(parsed.clone());
+
                                 if let Some(errors) = parsed.errors {
                                     // Display errors
                                     for error in errors {

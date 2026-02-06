@@ -8,6 +8,7 @@ mod meta_commands;
 mod query;
 mod table_renderer;
 mod utils;
+mod viewer;
 
 use args::get_args;
 use auth::maybe_authenticate;
@@ -15,6 +16,7 @@ use context::Context;
 use meta_commands::handle_meta_command;
 use query::{query, try_split_queries};
 use utils::history_path;
+use viewer::open_csvlens_viewer;
 
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("fdb-cli/", env!("CARGO_PKG_VERSION"));
@@ -58,8 +60,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     rl.bind_sequence(KeyEvent(KeyCode::Char('o'), Modifiers::CTRL), EventHandler::Simple(Cmd::Newline));
 
-    if is_tty {
-        eprintln!("Press Ctrl+D to exit.");
+    // Bind Ctrl-V to trigger viewer via special marker
+    // Using Cmd::AcceptLine alone won't work because we need to detect it was Ctrl-V
+    // Instead, we'll keep the two-step approach (Ctrl-V + Enter) which is explicit and clear
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Char('v'), Modifiers::CTRL),
+        EventHandler::Simple(Cmd::Insert(1, "\\view".to_string()))
+    );
+
+    if is_tty && !context.args.concise {
+        eprintln!("Type \\help for available commands or press Ctrl+V to view last result. Ctrl+D to exit.");
     }
     let mut buffer: String = String::new();
     let mut has_error = false;
@@ -93,6 +103,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match readline {
             Ok(line) => {
+                // Check for special commands
+                let trimmed = line.trim();
+
+                if trimmed == "\\view" {
+                    // Open csvlens viewer for last query result
+                    if let Err(e) = open_csvlens_viewer(&context) {
+                        eprintln!("Failed to open viewer: {}", e);
+                    }
+                    continue;
+                } else if trimmed == "\\help" {
+                    // Show help for special commands
+                    eprintln!("Special commands:");
+                    eprintln!("  \\view  - Open last query result in interactive csvlens viewer");
+                    eprintln!("  \\help  - Show this help message");
+                    eprintln!();
+                    eprintln!("Keyboard shortcuts:");
+                    eprintln!("  Ctrl+V - Open last query result in csvlens viewer (same as \\view)");
+                    eprintln!("  Ctrl+O - Insert newline (for multi-line queries)");
+                    eprintln!("  Ctrl+D - Exit REPL");
+                    eprintln!("  Ctrl+C - Cancel current input");
+                    continue;
+                }
+
                 buffer += line.as_str();
 
                 if buffer.trim() == "quit" || buffer.trim() == "exit" {

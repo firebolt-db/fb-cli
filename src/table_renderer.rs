@@ -21,18 +21,19 @@ pub enum JsonLineMessage {
     FinishWithErrors { errors: Vec<ErrorDetail> },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ResultColumn {
     pub name: String,
     #[serde(rename = "type")]
     pub column_type: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ErrorDetail {
     pub description: String,
 }
 
+#[derive(Clone, Debug)]
 pub struct ParsedResult {
     pub columns: Vec<ResultColumn>,
     pub rows: Vec<Vec<Value>>,
@@ -417,6 +418,54 @@ pub fn should_use_expanded_mode(columns: &[ResultColumn], rows: &[Vec<Value>], t
     false
 }
 
+/// Format a Value for CSV output
+fn format_value_csv(val: &Value) -> String {
+    match val {
+        Value::Null => String::new(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(_) | Value::Object(_) => val.to_string(),
+    }
+}
+
+/// Escape a CSV field according to RFC 4180
+fn escape_csv_field(field: &str) -> String {
+    // Escape fields containing comma, quote, or newline
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// Convert ParsedResult to CSV format
+pub fn write_result_as_csv<W: std::io::Write>(
+    writer: &mut W,
+    columns: &[ResultColumn],
+    rows: &[Vec<Value>],
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Write CSV header
+    let header = columns
+        .iter()
+        .map(|col| escape_csv_field(&col.name))
+        .collect::<Vec<_>>()
+        .join(",");
+    writeln!(writer, "{}", header)?;
+
+    // Write data rows
+    for row in rows {
+        let row_str = row
+            .iter()
+            .map(|val| escape_csv_field(&format_value_csv(val)))
+            .collect::<Vec<_>>()
+            .join(",");
+        writeln!(writer, "{}", row_str)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +722,52 @@ mod tests {
 
         // Only ANSI codes
         assert_eq!(display_width("\x1b[36m\x1b[1m\x1b[0m"), 0);
+    }
+
+    #[test]
+    fn test_write_result_as_csv() {
+        let columns = vec![
+            ResultColumn {
+                name: "id".to_string(),
+                column_type: "int".to_string(),
+            },
+            ResultColumn {
+                name: "name".to_string(),
+                column_type: "text".to_string(),
+            },
+        ];
+        let rows = vec![
+            vec![Value::Number(1.into()), Value::String("Alice".to_string())],
+            vec![Value::Number(2.into()), Value::String("Bob".to_string())],
+        ];
+
+        let mut output = Vec::new();
+        write_result_as_csv(&mut output, &columns, &rows).unwrap();
+
+        let csv_str = String::from_utf8(output).unwrap();
+        assert!(csv_str.contains("id,name"));
+        assert!(csv_str.contains("1,Alice"));
+        assert!(csv_str.contains("2,Bob"));
+    }
+
+    #[test]
+    fn test_csv_escaping() {
+        let columns = vec![ResultColumn {
+            name: "col".to_string(),
+            column_type: "text".to_string(),
+        }];
+        let rows = vec![
+            vec![Value::String("has,comma".to_string())],
+            vec![Value::String("has\"quote".to_string())],
+            vec![Value::String("has\nnewline".to_string())],
+        ];
+
+        let mut output = Vec::new();
+        write_result_as_csv(&mut output, &columns, &rows).unwrap();
+
+        let csv_str = String::from_utf8(output).unwrap();
+        assert!(csv_str.contains("\"has,comma\""));
+        assert!(csv_str.contains("\"has\"\"quote\""));
+        assert!(csv_str.contains("\"has\nnewline\""));
     }
 }
