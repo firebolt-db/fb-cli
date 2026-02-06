@@ -108,6 +108,12 @@ pub struct Args {
     pub query: Vec<String>,
 }
 
+impl Args {
+    pub fn should_render_table(&self) -> bool {
+        self.format.eq_ignore_ascii_case("auto")
+    }
+}
+
 pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut x: BTreeMap<String, String> = BTreeMap::new();
 
@@ -228,7 +234,12 @@ pub fn get_url(args: &Args) -> String {
     let is_localhost = args.host.starts_with("localhost");
     let protocol = if is_localhost { "http" } else { "https" };
     let output_format = if !args.format.is_empty() && !args.extra.iter().any(|e| e.starts_with("format=")) {
-        format!("&output_format={}", args.format)
+        let server_format = if args.format.eq_ignore_ascii_case("auto") {
+            "JSONLines_Compact"
+        } else {
+            &args.format
+        };
+        format!("&output_format={}", server_format)
     } else {
         String::new()
     };

@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::args::normalize_extras;
 use crate::auth::authenticate_service_account;
 use crate::context::Context;
+use crate::table_renderer;
 use crate::utils::spin;
 use crate::FIREBOLT_PROTOCOL_VERSION;
 use crate::USER_AGENT;
@@ -196,7 +197,44 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     let body = resp.text().await?;
 
                     // on stdout, on purpose
-                    print!("{}", body);
+                    if context.args.should_render_table() {
+                        match table_renderer::parse_jsonlines_compact(&body) {
+                            Ok(parsed) => {
+                                if let Some(errors) = parsed.errors {
+                                    // Display errors
+                                    for error in errors {
+                                        eprintln!("Error: {}", error.description);
+                                    }
+                                } else if !parsed.columns.is_empty() {
+                                    // Render table with dynamic wrapping
+                                    let table_output = table_renderer::render_table(&parsed.columns, &parsed.rows);
+                                    println!("{}", table_output);
+
+                                    // Show statistics (if not --concise)
+                                    if !context.args.concise && parsed.statistics.is_some() {
+                                        if let Some(stats) = parsed.statistics.as_ref() {
+                                            if let Some(obj) = stats.as_object() {
+                                                eprintln!("");  // Empty line before stats
+                                                for (key, value) in obj {
+                                                    eprintln!("{}: {}", key, value);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                // Fallback to raw output on parse error
+                                if context.args.verbose {
+                                    eprintln!("Failed to parse table format: {}", e);
+                                }
+                                println!("{}", body);
+                            }
+                        }
+                    } else {
+                        // Original behavior for other formats
+                        println!("{}", body);
+                    }
 
                     if !status.is_success() {
                         query_failed = true;

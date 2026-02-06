@@ -288,3 +288,12 @@ fn test_exit_code_on_query_error_interactive() {
         "Exit code should be non-zero when any query in session fails"
     );
 }
+
+#[test]
+fn test_auto_format() {
+    let (success, stdout, _) = run_fb(&["--core", "--format=auto", "SELECT 1 as id, 'test' as name"]);
+    assert!(success);
+    assert!(stdout.contains("id"));
+    assert!(stdout.contains("name"));
+    assert!(stdout.contains("test"));
+}

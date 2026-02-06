@@ -6,6 +6,7 @@ mod auth;
 mod context;
 mod meta_commands;
 mod query;
+mod table_renderer;
 mod utils;
 
 use args::get_args;
