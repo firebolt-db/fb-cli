@@ -18,6 +18,7 @@ pub struct Context {
     pub prompt2: Option<String>,
     pub prompt3: Option<String>,
     pub last_result: Option<ParsedResult>,
+    pub last_stats: Option<String>,
 }
 
 impl Context {
@@ -31,6 +32,7 @@ impl Context {
             prompt2: None,
             prompt3: None,
             last_result: None,
+            last_stats: None,
         }
     }
 

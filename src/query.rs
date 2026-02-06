@@ -14,6 +14,46 @@ use crate::utils::spin;
 use crate::FIREBOLT_PROTOCOL_VERSION;
 use crate::USER_AGENT;
 
+// Format bytes with appropriate unit (B, KB, MB, GB, TB)
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+
+    let bytes_f64 = bytes as f64;
+    let unit_index = (bytes_f64.log2() / 10.0).floor() as usize;
+    let unit_index = unit_index.min(UNITS.len() - 1);
+
+    let value = bytes_f64 / (1024_f64.powi(unit_index as i32));
+
+    if value >= 100.0 {
+        format!("{:.0} {}", value, UNITS[unit_index])
+    } else if value >= 10.0 {
+        format!("{:.1} {}", value, UNITS[unit_index])
+    } else {
+        format!("{:.2} {}", value, UNITS[unit_index])
+    }
+}
+
+// Format number with thousand separators
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let mut count = 0;
+
+    for c in s.chars().rev() {
+        if count > 0 && count % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+        count += 1;
+    }
+
+    result.chars().rev().collect()
+}
+
 // Set parameters via query
 pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // set flag = value;
@@ -237,17 +277,39 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
                                     println!("{}", table_output);
 
-                                    // Show statistics (if not --concise)
-                                    if !context.args.concise && parsed.statistics.is_some() {
-                                        if let Some(stats) = parsed.statistics.as_ref() {
-                                            if let Some(obj) = stats.as_object() {
-                                                eprintln!();  // Empty line before stats
-                                                for (key, value) in obj {
-                                                    eprintln!("{}: {}", key, value);
+                                    // Store statistics for display later (after Time)
+                                    context.last_stats = if !context.args.concise && parsed.statistics.is_some() {
+                                        parsed.statistics.as_ref().and_then(|stats| {
+                                            stats.as_object().map(|obj| {
+                                                let scanned_cache = obj.get("scanned_bytes_cache")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0);
+                                                let scanned_storage = obj.get("scanned_bytes_storage")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0);
+                                                let rows_read = obj.get("rows_read")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0);
+
+                                                let total_scanned = scanned_cache + scanned_storage;
+
+                                                // Format: "Scanned: x rows, y B (..B local, ..B remote)"
+                                                if rows_read > 0 || total_scanned > 0 {
+                                                    Some(format!(
+                                                        "Scanned: {} rows, {} ({} local, {} remote)",
+                                                        format_number(rows_read),
+                                                        format_bytes(total_scanned),
+                                                        format_bytes(scanned_cache),
+                                                        format_bytes(scanned_storage)
+                                                    ))
+                                                } else {
+                                                    None
                                                 }
-                                            }
-                                        }
-                                    }
+                                            }).flatten()
+                                        })
+                                    } else {
+                                        None
+                                    };
                                 }
                             }
                             Err(e) => {
@@ -280,6 +342,10 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
             if !context.args.concise {
                 let elapsed = format!("{:?}", elapsed / 100000 * 100000);
                 eprintln!("Time: {elapsed}");
+                // Print statistics if available (from client-side rendering)
+                if let Some(stats) = &context.last_stats {
+                    eprintln!("{}", stats);
+                }
                 if let Some(request_id) = maybe_request_id {
                     eprintln!("Request Id: {request_id}");
                 }
@@ -789,6 +855,36 @@ mod tests {
 
         let input = r#"SELECT $$42;"#;
         assert!(try_split_queries(input).is_none());
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1), "1.00 B");
+        assert_eq!(format_bytes(100), "100 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.00 KB");
+        assert_eq!(format_bytes(1536), "1.50 KB");
+        assert_eq!(format_bytes(10240), "10.0 KB");
+        assert_eq!(format_bytes(102400), "100 KB");
+        assert_eq!(format_bytes(1048576), "1.00 MB");
+        assert_eq!(format_bytes(1572864), "1.50 MB");
+        assert_eq!(format_bytes(10485760), "10.0 MB");
+        assert_eq!(format_bytes(104857600), "100 MB");
+        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format_bytes(1099511627776), "1.00 TB");
+    }
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(1), "1");
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1000), "1,000");
+        assert_eq!(format_number(1234), "1,234");
+        assert_eq!(format_number(123456), "123,456");
+        assert_eq!(format_number(1234567), "1,234,567");
+        assert_eq!(format_number(1234567890), "1,234,567,890");
     }
 
     #[test]
