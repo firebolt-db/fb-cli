@@ -206,8 +206,29 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         eprintln!("Error: {}", error.description);
                                     }
                                 } else if !parsed.columns.is_empty() {
-                                    // Render table with dynamic wrapping
-                                    let table_output = table_renderer::render_table(&parsed.columns, &parsed.rows);
+                                    // Get terminal width for intelligent display decisions
+                                    let terminal_width = terminal_size::terminal_size()
+                                        .map(|(terminal_size::Width(w), _)| w)
+                                        .unwrap_or(80);
+
+                                    let table_output = if context.args.is_expanded_mode() {
+                                        // Explicit expanded mode - stricter truncation (1000 chars)
+                                        table_renderer::render_table_expanded(&parsed.columns, &parsed.rows, terminal_width, 1000)
+                                    } else {
+                                        // Auto mode - intelligently choose display mode
+                                        // Use 10000 char limit for detection (same as horizontal rendering)
+                                        if table_renderer::should_use_expanded_mode(&parsed.columns, &parsed.rows, terminal_width, 10000) {
+                                            if context.args.verbose {
+                                                eprintln!("Note: Using expanded display mode (table too wide for horizontal display)");
+                                            }
+                                            // Auto-expanded mode - stricter truncation (1000 chars)
+                                            table_renderer::render_table_expanded(&parsed.columns, &parsed.rows, terminal_width, 1000)
+                                        } else {
+                                            // Horizontal mode - generous truncation (10k chars)
+                                            table_renderer::render_table(&parsed.columns, &parsed.rows, 10000)
+                                        }
+                                    };
+
                                     println!("{}", table_output);
 
                                     // Show statistics (if not --concise)
