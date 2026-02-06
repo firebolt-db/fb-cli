@@ -135,7 +135,12 @@ pub fn render_table(columns: &[ResultColumn], rows: &[Vec<Value>], max_value_len
                 } else {
                     value_str
                 };
-                Cell::new(display_value)
+                // Color NULL values differently to distinguish from string "NULL"
+                if val.is_null() {
+                    Cell::new(display_value).fg(Color::DarkGrey)
+                } else {
+                    Cell::new(display_value)
+                }
             })
             .collect();
 
@@ -234,8 +239,12 @@ pub fn render_table_vertical(
                     .fg(Color::Cyan)
                     .add_attribute(Attribute::Bold);
 
-                // Value cell (default color)
-                let value_cell = Cell::new(truncated_value);
+                // Value cell - color NULL values differently to distinguish from string "NULL"
+                let value_cell = if row[col_idx].is_null() {
+                    Cell::new(truncated_value).fg(Color::DarkGrey)
+                } else {
+                    Cell::new(truncated_value)
+                };
 
                 table.add_row(vec![name_cell, value_cell]);
             }
@@ -759,5 +768,59 @@ mod tests {
         assert!(csv_str.contains("\"has,comma\""));
         assert!(csv_str.contains("\"has\"\"quote\""));
         assert!(csv_str.contains("\"has\nnewline\""));
+    }
+
+    #[test]
+    fn test_null_rendering() {
+        // Test that NULL values and string "NULL" are both rendered correctly
+        // (Color distinction can be verified manually; tests just ensure no crashes)
+        let columns = vec![
+            ResultColumn {
+                name: "id".to_string(),
+                column_type: "int".to_string(),
+            },
+            ResultColumn {
+                name: "name".to_string(),
+                column_type: "text".to_string(),
+            },
+        ];
+        let rows = vec![
+            vec![Value::Number(1.into()), Value::Null], // Real NULL
+            vec![Value::Number(2.into()), Value::String("NULL".to_string())], // String "NULL"
+            vec![Value::Number(3.into()), Value::String("test".to_string())], // Regular string
+        ];
+
+        // Should not crash and should contain NULL text
+        let output = render_table(&columns, &rows, 1000);
+        assert!(output.contains("NULL"));
+        assert!(output.contains("test"));
+        assert!(output.contains('1'));
+        assert!(output.contains('2'));
+        assert!(output.contains('3'));
+    }
+
+    #[test]
+    fn test_null_rendering_vertical() {
+        // Test that NULL values are rendered in vertical mode without crashes
+        let columns = vec![
+            ResultColumn {
+                name: "id".to_string(),
+                column_type: "int".to_string(),
+            },
+            ResultColumn {
+                name: "value".to_string(),
+                column_type: "text".to_string(),
+            },
+        ];
+        let rows = vec![
+            vec![Value::Number(1.into()), Value::Null],
+            vec![Value::Number(2.into()), Value::String("NULL".to_string())],
+        ];
+
+        // Should not crash and should contain NULL text
+        let output = render_table_vertical(&columns, &rows, 80, 1000);
+        assert!(output.contains("NULL"));
+        assert!(output.contains("id"));
+        assert!(output.contains("value"));
     }
 }
