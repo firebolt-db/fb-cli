@@ -35,6 +35,52 @@ Time: 87.747ms
 
 Also support history + search in it (`CTRL+R`).
 
+## Output Formats
+
+### Client-Side Rendering
+
+Use `--format client:auto` (default in interactive mode) for pretty table output with smart formatting:
+
+```
+=> select * from information_schema.engine_query_history limit 3;
++--------------------+-------------+--------+
+| query_id           | query_label | status |
++===============================================+
+| abc123...          | NULL        | ENDED  |
+| def456...          | my_query    | ENDED  |
+| ghi789...          | NULL        | ENDED  |
++--------------------+-------------+--------+
+Time: 15.2ms
+Scanned: 3 rows, 1.5 KB (1.2 KB local, 300 B remote)
+Request Id: xyz...
+```
+
+Available client modes:
+- `client:auto` - Smart switching between horizontal/vertical layout
+- `client:vertical` - Two-column vertical layout for wide tables
+- `client:horizontal` - Standard horizontal table
+
+### Interactive Result Exploration
+
+Press `Ctrl+V` then `Enter` (or type `\view`) to open the last query result in an interactive viewer powered by [csvlens](https://github.com/YS-L/csvlens). **Note:** Requires client-side output formats (`client:auto`, `client:vertical`, or `client:horizontal`).
+
+```
+=> select * from information_schema.engine_query_history;
+[... table output ...]
+
+=> \view
+[Opens interactive csvlens viewer with sorting, filtering, and navigation]
+```
+
+### Server-Side Rendering
+
+Use format names without prefix for server-rendered output (default in non-interactive/piped mode):
+- `PSQL` - PostgreSQL-style format
+- `JSON` - JSON output
+- `CSV` - CSV format
+- `TabSeparatedWithNames` - TSV with headers
+- And more...
+
 ## Help
 
 ```
@@ -49,7 +95,7 @@ Optional arguments:
   -C, --core               Preset of settings to connect to Firebolt Core
   -h, --host HOSTNAME      Hostname (and port) to connect to
   -d, --database DATABASE  Database name to use
-  -f, --format FORMAT      Output format (e.g., TabSeparatedWithNames, PSQL, JSONLines_Compact, Vertical, ...)
+  -f, --format FORMAT      Output format (client:auto, client:vertical, client:horizontal, TabSeparatedWithNames, PSQL, JSONLines_Compact, ...)
   -e, --extra EXTRA        Extra settings in the form --extra <name>=<value>
   -l, --label LABEL        Query label for tracking or identification
   -j, --jwt JWT            JWT for authentication
@@ -96,7 +142,8 @@ Most of them from https://github.com/kkawakam/rustyline:
 Some of them specific to `fb`:
 | Keystroke             | Action                                                                      |
 | --------------------- | --------------------------------------------------------------------------- |
-| Ctrl-C                | Cancel current input.                                                       |
+| Ctrl-V then Enter     | Open last query result in interactive csvlens viewer                        |
+| Ctrl-C                | Cancel current input                                                        |
 | Ctrl-O                | Insert a newline                                                            |
 
 
