@@ -165,30 +165,6 @@ fn format_value(value: &Value) -> String {
 }
 
 /// Calculate the display width of a string, ignoring ANSI escape codes
-fn display_width(s: &str) -> usize {
-    let mut width = 0;
-    let mut in_escape = false;
-
-    for ch in s.chars() {
-        if ch == '\x1b' {
-            // Start of ANSI escape sequence
-            in_escape = true;
-        } else if in_escape {
-            // Inside escape sequence - check for end
-            if ch.is_ascii_alphabetic() {
-                // End of escape sequence (SGR codes end with a letter)
-                in_escape = false;
-            }
-            // Don't count characters inside escape sequences
-        } else {
-            // Regular character - count it
-            width += 1;
-        }
-    }
-
-    width
-}
-
 /// Render table in vertical format (two-column table with column names and values)
 /// Used when table is too wide for horizontal display in auto mode
 pub fn render_table_vertical(
@@ -705,24 +681,6 @@ mod tests {
         assert!(!should_use_vertical_mode(&eight_columns, 80, 10));
         // Should switch to vertical (10 < 11)
         assert!(should_use_vertical_mode(&eight_columns, 80, 11));
-    }
-
-    #[test]
-    fn test_display_width() {
-        // Plain text
-        assert_eq!(display_width("hello"), 5);
-
-        // Text with ANSI color codes (cyan)
-        assert_eq!(display_width("\x1b[36mhello\x1b[0m"), 5);
-
-        // Text with ANSI bold + color
-        assert_eq!(display_width("\x1b[1m\x1b[36mhello\x1b[0m"), 5);
-
-        // Empty string
-        assert_eq!(display_width(""), 0);
-
-        // Only ANSI codes
-        assert_eq!(display_width("\x1b[36m\x1b[1m\x1b[0m"), 0);
     }
 
     #[test]
