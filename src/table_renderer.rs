@@ -312,34 +312,45 @@ pub fn render_table_expanded(columns: &[ResultColumn], rows: &[Vec<Value>], term
 
             for (line_idx, line) in lines.iter().enumerate() {
                 if line_idx >= start_line {
-                    // Skip the bottom border for non-last chunks to reduce visual clutter
-                    if !is_last_chunk && line_idx == num_lines - 1 {
-                        continue;
+                    // Swap border characters for better visual hierarchy:
+                    // - Use '-' for header separator (lighter, less prominent)
+                    // - Use '=' for chunk separator (heavier, more prominent)
+                    let mut processed_line = line.to_string();
+                    if line.starts_with('+') && line.contains('=') {
+                        // Header separator line: change = to -
+                        processed_line = processed_line.replace('=', "-");
+                    } else if line.starts_with('+') && line.contains('-') && line_idx == num_lines - 1 {
+                        // Bottom border: change - to = for non-last chunks to emphasize separation
+                        if !is_last_chunk {
+                            processed_line = processed_line.replace('-', "=");
+                        }
                     }
 
                     // Pad the line to terminal width for alignment
                     // Use display_width to ignore ANSI escape codes
-                    let line_len = display_width(line);
+                    let line_len = display_width(&processed_line);
                     if line_len < available_width {
                         // For lines ending with '+', extend with appropriate border character
-                        let padded_line = if line.ends_with('+') {
+                        let padded_line = if processed_line.ends_with('+') {
                             // Determine the border character from the line
-                            let pad_char = if line.contains('═') {
+                            let pad_char = if processed_line.contains('═') {
                                 '═'
-                            } else if line.contains('-') {
+                            } else if processed_line.contains('=') {
+                                '='
+                            } else if processed_line.contains('-') {
                                 '-'
                             } else {
                                 '-'
                             };
                             let padding = pad_char.to_string().repeat(available_width - line_len);
-                            format!("{}{}", &line[..line.len() - 1], padding) + "+"
+                            format!("{}{}", &processed_line[..processed_line.len() - 1], padding) + "+"
                         } else {
                             // For content lines, pad with spaces
-                            format!("{}{}", line, " ".repeat(available_width - line_len))
+                            format!("{}{}", processed_line, " ".repeat(available_width - line_len))
                         };
                         output.push_str(&padded_line);
                     } else {
-                        output.push_str(line);
+                        output.push_str(&processed_line);
                     }
                     output.push('\n');
                 }
