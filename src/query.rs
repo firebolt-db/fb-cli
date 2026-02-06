@@ -251,12 +251,12 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                 if context.args.verbose {
                                     eprintln!("Failed to parse table format: {}", e);
                                 }
-                                println!("{}", body);
+                                print!("{}", body);
                             }
                         }
                     } else {
                         // Original behavior for other formats
-                        println!("{}", body);
+                        print!("{}", body);
                     }
 
                     if !status.is_success() {
