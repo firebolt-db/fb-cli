@@ -237,7 +237,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                     if !context.args.concise && parsed.statistics.is_some() {
                                         if let Some(stats) = parsed.statistics.as_ref() {
                                             if let Some(obj) = stats.as_object() {
-                                                eprintln!("");  // Empty line before stats
+                                                eprintln!();  // Empty line before stats
                                                 for (key, value) in obj {
                                                     eprintln!("{}: {}", key, value);
                                                 }
@@ -279,7 +279,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                 if let Some(request_id) = maybe_request_id {
                     eprintln!("Request Id: {request_id}");
                 }
-                eprintln!("")
+                eprintln!()
             }
         }
     };
