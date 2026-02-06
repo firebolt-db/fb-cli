@@ -314,16 +314,14 @@ pub fn render_table_expanded(columns: &[ResultColumn], rows: &[Vec<Value>], term
                 if line_idx >= start_line {
                     // Swap border characters for better visual hierarchy:
                     // - Use '-' for header separator (lighter, less prominent)
-                    // - Use '=' for chunk separator (heavier, more prominent)
+                    // - Use '=' for chunk separator at top of non-first chunks (heavier, more prominent)
                     let mut processed_line = line.to_string();
                     if line.starts_with('+') && line.contains('=') {
                         // Header separator line: change = to -
                         processed_line = processed_line.replace('=', "-");
-                    } else if line.starts_with('+') && line.contains('-') && line_idx == num_lines - 1 {
-                        // Bottom border: change - to = for non-last chunks to emphasize separation
-                        if !is_last_chunk {
-                            processed_line = processed_line.replace('-', "=");
-                        }
+                    } else if line.starts_with('+') && line.contains('-') && line_idx == 0 && chunk_idx > 0 {
+                        // Top border of non-first chunks: change - to = to emphasize separation
+                        processed_line = processed_line.replace('-', "=");
                     }
 
                     // Pad the line to terminal width for alignment
