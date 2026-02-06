@@ -2,6 +2,7 @@ use gumdrop::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::IsTerminal;
 
 use crate::utils::{config_path, init_root_path};
 
@@ -47,7 +48,7 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub database: String,
 
-    #[options(help = "Output format (auto, vertical, PSQL, TabSeparatedWithNames, JSONLines_Compact, ...)")]
+    #[options(help = "Output format (client:auto, client:vertical, client:horizontal, PSQL, JSON, CSV, ...)")]
     #[serde(default)]
     pub format: String,
 
@@ -127,11 +128,30 @@ pub struct Args {
 
 impl Args {
     pub fn should_render_table(&self) -> bool {
-        self.format.eq_ignore_ascii_case("auto") || self.format.eq_ignore_ascii_case("vertical")
+        // Client rendering when format starts with "client:"
+        self.format.starts_with("client:")
     }
 
-    pub fn is_vertical_mode(&self) -> bool {
-        self.format.eq_ignore_ascii_case("vertical")
+    /// Extract display mode from client: prefix
+    /// "client:auto" → "auto", "client:vertical" → "vertical", "PSQL" → ""
+    pub fn get_display_mode(&self) -> &str {
+        if self.format.starts_with("client:") {
+            &self.format[7..]  // Skip "client:" prefix
+        } else {
+            ""
+        }
+    }
+
+    pub fn is_vertical_display(&self) -> bool {
+        self.get_display_mode().eq_ignore_ascii_case("vertical")
+    }
+
+    pub fn is_horizontal_display(&self) -> bool {
+        self.get_display_mode().eq_ignore_ascii_case("horizontal")
+    }
+
+    pub fn is_auto_display(&self) -> bool {
+        self.get_display_mode().eq_ignore_ascii_case("auto")
     }
 }
 
@@ -227,12 +247,28 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         .or(args.core.then(|| String::from("firebolt")).unwrap_or(defaults.database))
         .or(String::from("local_dev_db"));
 
+    // Detect if running in interactive mode
+    let is_interactive = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
+
     if args.core {
         args.host = args.host.or(String::from("localhost:3473"));
         args.jwt = String::from("");
         args.format = args.format.or(String::from("PSQL"));
     } else {
-        args.format = args.format.or(defaults.format).or(String::from("PSQL"));
+        // Apply smart defaults based on mode if format is not already set
+        let default_format = if args.format.is_empty() && defaults.format.is_empty() {
+            if is_interactive {
+                // Interactive mode: default to client-side rendering with auto display
+                String::from("client:auto")
+            } else {
+                // Non-interactive mode: default to server-side rendering with PSQL
+                String::from("PSQL")
+            }
+        } else {
+            String::new()
+        };
+
+        args.format = args.format.or(defaults.format).or(default_format);
         args.host = args.host.or(defaults.host).or(default_host);
     }
 
@@ -240,6 +276,16 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         let mut extras = normalize_extras(defaults.extra, true)?;
         extras.append(&mut args.extra);
         args.extra = normalize_extras(extras, false)?;
+    }
+
+    // Warn if user specified a client format name without the "client:" prefix
+    if args.format.eq_ignore_ascii_case("auto")
+        || args.format.eq_ignore_ascii_case("vertical")
+        || args.format.eq_ignore_ascii_case("horizontal") {
+        eprintln!("Warning: Format '{}' is not supported by the server.", args.format);
+        eprintln!("Did you mean '--format client:{}'?", args.format.to_lowercase());
+        eprintln!("Client-side formats require the 'client:' prefix (e.g., client:auto, client:vertical, client:horizontal)");
+        eprintln!();
     }
 
     Ok(args)
@@ -268,12 +314,13 @@ pub fn get_url(args: &Args) -> String {
     let is_localhost = args.host.starts_with("localhost");
     let protocol = if is_localhost { "http" } else { "https" };
     let output_format = if !args.format.is_empty() && !args.extra.iter().any(|e| e.starts_with("format=")) {
-        let server_format = if args.format.eq_ignore_ascii_case("auto") || args.format.eq_ignore_ascii_case("vertical") {
-            "JSONLines_Compact"
+        if args.format.starts_with("client:") {
+            // Client-side rendering: always use JSONLines_Compact
+            format!("&output_format=JSONLines_Compact")
         } else {
-            &args.format
-        };
-        format!("&output_format={}", server_format)
+            // Server-side rendering: use format as-is
+            format!("&output_format={}", &args.format)
+        }
     } else {
         String::new()
     };
@@ -381,5 +428,93 @@ mod tests {
         assert_eq!(result[0], "param1=value%20with%20spaces");
         assert_eq!(result[1], "param2=value%20with%20spaces");
         assert_eq!(result[2], "param3=%20%20value%20with%20spaces%20");
+    }
+
+    #[test]
+    fn test_should_render_table_with_client_prefix() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        // Server-side format: should not render
+        args.format = String::from("PSQL");
+        assert!(!args.should_render_table());
+
+        args.format = String::from("JSON");
+        assert!(!args.should_render_table());
+
+        // Client-side format: should render
+        args.format = String::from("client:auto");
+        assert!(args.should_render_table());
+
+        args.format = String::from("client:vertical");
+        assert!(args.should_render_table());
+
+        args.format = String::from("client:horizontal");
+        assert!(args.should_render_table());
+    }
+
+    #[test]
+    fn test_get_display_mode() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        // Client formats
+        args.format = String::from("client:auto");
+        assert_eq!(args.get_display_mode(), "auto");
+
+        args.format = String::from("client:vertical");
+        assert_eq!(args.get_display_mode(), "vertical");
+
+        args.format = String::from("client:horizontal");
+        assert_eq!(args.get_display_mode(), "horizontal");
+
+        // Server formats
+        args.format = String::from("PSQL");
+        assert_eq!(args.get_display_mode(), "");
+
+        args.format = String::from("JSON");
+        assert_eq!(args.get_display_mode(), "");
+    }
+
+    #[test]
+    fn test_display_mode_helpers() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        args.format = String::from("client:auto");
+        assert!(args.is_auto_display());
+        assert!(!args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+
+        args.format = String::from("client:vertical");
+        assert!(!args.is_auto_display());
+        assert!(args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+
+        args.format = String::from("client:horizontal");
+        assert!(!args.is_auto_display());
+        assert!(!args.is_vertical_display());
+        assert!(args.is_horizontal_display());
+
+        args.format = String::from("PSQL");
+        assert!(!args.is_auto_display());
+        assert!(!args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+    }
+
+    #[test]
+    fn test_format_without_client_prefix() {
+        // Test that formats "auto", "vertical", "horizontal" without "client:" prefix
+        // are recognized (they will trigger a warning at runtime, but are valid format strings)
+        let mut args = Args::parse_args_default_or_exit();
+
+        args.format = String::from("auto");
+        assert!(!args.should_render_table()); // Should NOT render because no "client:" prefix
+        assert_eq!(args.get_display_mode(), ""); // Empty because no prefix
+
+        args.format = String::from("vertical");
+        assert!(!args.should_render_table());
+        assert_eq!(args.get_display_mode(), "");
+
+        args.format = String::from("horizontal");
+        assert!(!args.should_render_table());
+        assert_eq!(args.get_display_mode(), "");
     }
 }

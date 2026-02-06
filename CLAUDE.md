@@ -138,6 +138,49 @@ URLs are built from:
 - Query label: from `--label`
 - Advanced mode: automatically added for non-localhost
 
+### Output Format Options with Client Prefix
+
+fb-cli uses a single `--format` option with a prefix notation to distinguish between client-side and server-side rendering:
+
+**Client-Side Rendering** (prefix with `client:`):
+- Values: `client:auto`, `client:vertical`, `client:horizontal`
+- Behavior: Client requests `JSONLines_Compact` and renders it with formatting
+- Supports: Pretty tables, NULL coloring, csvlens viewer integration
+- Default in interactive mode: `client:auto`
+
+**Client display modes:**
+- `client:auto` - Smart switching: horizontal for narrow tables, vertical for wide tables
+- `client:horizontal` - Force horizontal table with column headers
+- `client:vertical` - Force vertical two-column layout (column | value)
+
+**Server-Side Rendering** (no prefix):
+- Values: `PSQL`, `TabSeparatedWithNames`, `JSON`, `CSV`, `JSONLines_Compact`, etc.
+- Behavior: Server renders output in this format, client prints raw output
+- Default in non-interactive mode: `PSQL`
+
+**Detection:**
+- If `--format` starts with `client:`: Use client-side rendering
+- Otherwise: Use server-side rendering
+
+**Default Behavior:**
+- Interactive sessions (TTY): `--format client:auto` (client-side pretty tables)
+- Non-interactive (piped/redirected): `--format PSQL` (server-side, backwards compatible)
+- Can be overridden with explicit `--format` flag
+
+**Changing format at runtime:**
+- Command-line: `--format client:auto` or `--format JSON`
+- SQL-style: `set format = client:vertical;` or `set format = CSV;`
+- Reset: `unset format;` (resets to default based on interactive mode)
+
+**Config persistence:**
+- Saved in `~/.firebolt/fb_config`
+- Format can be persisted with `--update-defaults`
+- Clear which mode: `client:` prefix means client-side, no prefix means server-side
+
+**csvlens Integration:**
+- Only works with client-side formats (`client:*`)
+- Automatically checks and displays error if server-side format used
+
 ### Firebolt Core vs Standard
 
 - **Core mode** (`--core`): Connects to Firebolt Core at `localhost:3473`, database `firebolt`, format `PSQL`, no JWT
@@ -156,5 +199,6 @@ URLs are built from:
 - **REPL multi-line**: Press Ctrl+O to insert newline. Queries must end with semicolon.
 - **Ctrl+C in REPL**: Cancels current input but doesn't exit
 - **Ctrl+D in REPL**: Exits (EOF)
+- **Ctrl+V in REPL**: Inserts `\view` command (press Enter to execute and open csvlens viewer for last result)
 - **Spinner**: Shown during query execution unless `--no-spinner` or `--concise`
 - **History**: Saved to `~/.firebolt/fb_history` (max 10,000 entries), supports Ctrl+R search

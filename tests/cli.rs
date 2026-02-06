@@ -291,7 +291,7 @@ fn test_exit_code_on_query_error_interactive() {
 
 #[test]
 fn test_auto_format() {
-    let (success, stdout, _) = run_fb(&["--core", "--format=auto", "SELECT 1 as id, 'test' as name"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:auto", "SELECT 1 as id, 'test' as name"]);
     assert!(success);
     assert!(stdout.contains("id"));
     assert!(stdout.contains("name"));
@@ -300,7 +300,7 @@ fn test_auto_format() {
 
 #[test]
 fn test_expanded_format() {
-    let (success, stdout, _) = run_fb(&["--core", "--format=vertical", "SELECT 1 as id, 'test' as name"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:vertical", "SELECT 1 as id, 'test' as name"]);
     assert!(success);
     assert!(stdout.contains("Row 1:"));
     assert!(stdout.contains("id"));
@@ -313,7 +313,7 @@ fn test_wide_table_auto_expanded() {
     // Query with many columns should automatically use vertical mode
     let (success, stdout, _) = run_fb(&[
         "--core",
-        "--format=auto",
+        "--format=client:auto",
         "SELECT 1 as a, 2 as b, 3 as c, 4 as d, 5 as e, 6 as f, \
          7 as g, 8 as h, 9 as i, 10 as j, 11 as k, 12 as l, 13 as m",
     ]);
@@ -324,8 +324,67 @@ fn test_wide_table_auto_expanded() {
 #[test]
 fn test_narrow_table_stays_horizontal() {
     // Query with few columns should stay horizontal
-    let (success, stdout, _) = run_fb(&["--core", "--format=auto", "SELECT 1 as id, 'test' as name"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:auto", "SELECT 1 as id, 'test' as name"]);
     assert!(success);
     assert!(!stdout.contains("Row 1:")); // Should NOT use vertical
     assert!(stdout.contains("id")); // But still contains data
+}
+
+#[test]
+fn test_client_format_horizontal() {
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:horizontal", "SELECT 1 as id, 'test' as name"]);
+    assert!(success);
+
+    // Should have horizontal table format
+    assert!(stdout.contains("id"));
+    assert!(stdout.contains("name"));
+    assert!(stdout.contains("test"));
+    assert!(stdout.contains('+')); // Has borders
+    assert!(stdout.contains('|')); // Has column separators
+
+    // Should NOT use vertical format
+    assert!(!stdout.contains("Row 1"));
+}
+
+#[test]
+fn test_client_format_vertical() {
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:vertical", "SELECT 1 as id, 'test' as name"]);
+    assert!(success);
+
+    // Should have vertical format
+    assert!(stdout.contains("Row 1"));
+    assert!(stdout.contains("id"));
+    assert!(stdout.contains("name"));
+}
+
+#[test]
+fn test_client_format_auto() {
+    // Auto should choose based on terminal width
+    let (success, stdout, _) = run_fb(&["--core", "--format=client:auto", "SELECT 1 as id"]);
+    assert!(success);
+
+    // Should have table format
+    assert!(stdout.contains('+')); // Has table borders
+    assert!(stdout.contains("id"));
+}
+
+#[test]
+fn test_server_format_json() {
+    // Server-side format (no client: prefix)
+    let (success, stdout, _) = run_fb(&["--core", "--format=JSON_Compact", "SELECT 1 as id"]);
+    assert!(success);
+
+    // Should have JSON format from server
+    assert!(stdout.contains('{')); // JSON
+    assert!(!stdout.contains('+')); // Not a table
+}
+
+#[test]
+fn test_server_format_psql() {
+    let (success, stdout, _) = run_fb(&["--core", "--format=PSQL", "SELECT 1 as id"]);
+    assert!(success);
+
+    // Should have PSQL format from server
+    assert!(!stdout.contains('+')); // No table borders (PSQL style is different)
+    assert!(stdout.contains("id"));
 }

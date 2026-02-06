@@ -5,6 +5,11 @@ use std::fs::File;
 
 /// Open csvlens viewer for the last query result
 pub fn open_csvlens_viewer(context: &Context) -> Result<(), Box<dyn std::error::Error>> {
+    // csvlens only works with client-side rendering (when last_result is populated)
+    if !context.args.format.starts_with("client:") {
+        return Err("csvlens viewer requires client-side rendering. Use --format client:auto or similar.".into());
+    }
+
     // Check if we have a result to display
     let result = match &context.last_result {
         Some(r) => r,
@@ -69,7 +74,8 @@ mod tests {
 
     #[test]
     fn test_no_result_error() {
-        let args = crate::args::get_args().unwrap();
+        let mut args = crate::args::get_args().unwrap();
+        args.format = String::from("client:auto");
         let context = Context::new(args);
 
         // Should not panic, should return Ok with error message
@@ -79,7 +85,8 @@ mod tests {
 
     #[test]
     fn test_error_result() {
-        let args = crate::args::get_args().unwrap();
+        let mut args = crate::args::get_args().unwrap();
+        args.format = String::from("client:auto");
         let mut context = Context::new(args);
         context.last_result = Some(ParsedResult {
             columns: vec![],
@@ -96,7 +103,8 @@ mod tests {
 
     #[test]
     fn test_empty_columns() {
-        let args = crate::args::get_args().unwrap();
+        let mut args = crate::args::get_args().unwrap();
+        args.format = String::from("client:auto");
         let mut context = Context::new(args);
         context.last_result = Some(ParsedResult {
             columns: vec![],
@@ -111,7 +119,8 @@ mod tests {
 
     #[test]
     fn test_empty_rows() {
-        let args = crate::args::get_args().unwrap();
+        let mut args = crate::args::get_args().unwrap();
+        args.format = String::from("client:auto");
         let mut context = Context::new(args);
         context.last_result = Some(ParsedResult {
             columns: vec![ResultColumn {
@@ -129,7 +138,8 @@ mod tests {
 
     #[test]
     fn test_csv_file_creation() {
-        let args = crate::args::get_args().unwrap();
+        let mut args = crate::args::get_args().unwrap();
+        args.format = String::from("client:auto");
         let mut context = Context::new(args);
         context.last_result = Some(ParsedResult {
             columns: vec![

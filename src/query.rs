@@ -214,21 +214,25 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         .map(|(terminal_size::Width(w), _)| w)
                                         .unwrap_or(80);
 
-                                    let table_output = if context.args.is_vertical_mode() {
-                                        // Explicit vertical mode - use vertical format
+                                    let table_output = if context.args.is_horizontal_display() {
+                                        // Force horizontal table layout
+                                        table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
+                                    } else if context.args.is_vertical_display() {
+                                        // Force vertical two-column layout
                                         table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, context.args.max_cell_length)
-                                    } else {
-                                        // Auto mode - intelligently choose display mode based on columns and width
+                                    } else if context.args.is_auto_display() {
+                                        // Auto mode - intelligently choose display mode
                                         if table_renderer::should_use_vertical_mode(&parsed.columns, terminal_width, context.args.min_col_width) {
                                             if context.args.verbose {
                                                 eprintln!("Note: Using vertical display mode (table too wide for horizontal display)");
                                             }
-                                            // Use vertical mode
                                             table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, context.args.max_cell_length)
                                         } else {
-                                            // Use horizontal mode
                                             table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
                                         }
+                                    } else {
+                                        // Fallback to horizontal if format starts with client: but mode not recognized
+                                        table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
                                     };
 
                                     println!("{}", table_output);

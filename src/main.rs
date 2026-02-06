@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if is_tty && !context.args.concise {
-        eprintln!("Type \\help for available commands or press Ctrl+V to view last result. Ctrl+D to exit.");
+        eprintln!("Type \\help for available commands or press Ctrl+V then Enter to view last result. Ctrl+D to exit.");
     }
     let mut buffer: String = String::new();
     let mut has_error = false;
@@ -115,14 +115,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if trimmed == "\\help" {
                     // Show help for special commands
                     eprintln!("Special commands:");
-                    eprintln!("  \\view  - Open last query result in interactive csvlens viewer");
-                    eprintln!("  \\help  - Show this help message");
+                    eprintln!("  \\view       - Open last query result in csvlens viewer");
+                    eprintln!("                (requires client format: client:auto, client:vertical, or client:horizontal)");
+                    eprintln!("  \\help       - Show this help message");
+                    eprintln!();
+                    eprintln!("SQL-style commands:");
+                    eprintln!("  set format = <value>;   - Change output format");
+                    eprintln!("  unset format;           - Reset format to default");
+                    eprintln!();
+                    eprintln!("Format values:");
+                    eprintln!("  Client-side rendering (prefix with 'client:'):");
+                    eprintln!("    client:auto       - Smart switching between horizontal/vertical (default in interactive)");
+                    eprintln!("    client:horizontal - Force horizontal table layout");
+                    eprintln!("    client:vertical   - Force vertical two-column layout");
+                    eprintln!();
+                    eprintln!("  Server-side rendering (no prefix):");
+                    eprintln!("    PSQL              - PostgreSQL-style format (default in non-interactive)");
+                    eprintln!("    JSON              - JSON format");
+                    eprintln!("    CSV               - CSV format");
+                    eprintln!("    TabSeparatedWithNames    - TSV with headers");
+                    eprintln!("    JSONLines_Compact        - JSON Lines format");
+                    eprintln!();
+                    eprintln!("Examples:");
+                    eprintln!("  set format = client:vertical;  # Use client-side vertical display");
+                    eprintln!("  set format = JSON;             # Use server-side JSON output");
                     eprintln!();
                     eprintln!("Keyboard shortcuts:");
-                    eprintln!("  Ctrl+V - Open last query result in csvlens viewer (same as \\view)");
-                    eprintln!("  Ctrl+O - Insert newline (for multi-line queries)");
-                    eprintln!("  Ctrl+D - Exit REPL");
-                    eprintln!("  Ctrl+C - Cancel current input");
+                    eprintln!("  Ctrl+V then Enter - Open last query result in csvlens viewer (inserts \\view)");
+                    eprintln!("  Ctrl+O            - Insert newline (for multi-line queries)");
+                    eprintln!("  Ctrl+D            - Exit REPL");
+                    eprintln!("  Ctrl+C            - Cancel current input");
                     continue;
                 }
 
