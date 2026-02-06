@@ -9,8 +9,13 @@ pub enum JsonLineMessage {
     #[serde(rename = "START")]
     Start {
         result_columns: Vec<ResultColumn>,
+        // The following fields are part of the Firebolt JSONLines_Compact protocol
+        // and required for deserialization, but not used by the client renderer.
+        #[allow(dead_code)]
         query_id: String,
+        #[allow(dead_code)]
         request_id: String,
+        #[allow(dead_code)]
         query_label: Option<String>,
     },
     #[serde(rename = "DATA")]
@@ -24,6 +29,10 @@ pub enum JsonLineMessage {
 #[derive(Clone, Debug, Deserialize)]
 pub struct ResultColumn {
     pub name: String,
+    // Column type from Firebolt server (e.g., "bigint", "integer", "text").
+    // Currently unused for rendering but available for future type-aware formatting.
+    // Required for deserialization.
+    #[allow(dead_code)]
     #[serde(rename = "type")]
     pub column_type: String,
 }
