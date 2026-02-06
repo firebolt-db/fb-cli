@@ -350,6 +350,145 @@ mod tests {
     }
 
     #[test]
+    fn test_format_value_firebolt_bigint() {
+        // BIGINT arrives as JSON string (not number) to preserve precision
+        let bigint_max = Value::String("9223372036854775807".to_string());
+        assert_eq!(format_value(&bigint_max), "9223372036854775807");
+
+        let bigint_min = Value::String("-9223372036854775808".to_string());
+        assert_eq!(format_value(&bigint_min), "-9223372036854775808");
+
+        // Should display as-is without quotes
+        let output = format_value(&bigint_max);
+        assert!(!output.starts_with('"'), "BIGINT should not have quotes in display");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_numeric() {
+        // NUMERIC/DECIMAL arrives as JSON string for exact precision
+        let decimal = Value::String("1.23".to_string());
+        assert_eq!(format_value(&decimal), "1.23");
+
+        let large_decimal = Value::String("12345678901234567890.123456789".to_string());
+        assert_eq!(format_value(&large_decimal), "12345678901234567890.123456789");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_integers() {
+        // INT arrives as JSON number
+        let int_val = Value::Number(42.into());
+        assert_eq!(format_value(&int_val), "42");
+
+        let negative = Value::Number((-42).into());
+        assert_eq!(format_value(&negative), "-42");
+
+        // INT min/max values
+        let int_max = Value::Number(2147483647.into());
+        assert_eq!(format_value(&int_max), "2147483647");
+
+        let int_min = Value::Number((-2147483648).into());
+        assert_eq!(format_value(&int_min), "-2147483648");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_floats() {
+        // DOUBLE/REAL arrive as JSON numbers
+        let pi = serde_json::Number::from_f64(3.14159).unwrap();
+        let formatted = format_value(&Value::Number(pi));
+        assert!(formatted.starts_with("3.14"), "Got: {}", formatted);
+
+        // Integer-valued float keeps decimal point
+        let one = serde_json::Number::from_f64(1.0).unwrap();
+        assert_eq!(format_value(&Value::Number(one)), "1.0");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_temporal() {
+        // DATE arrives as ISO format string
+        let date = Value::String("2026-02-06".to_string());
+        assert_eq!(format_value(&date), "2026-02-06");
+
+        // TIMESTAMP arrives as ISO-like format with timezone
+        let timestamp = Value::String("2026-02-06 15:35:34.519403+00".to_string());
+        assert_eq!(format_value(&timestamp), "2026-02-06 15:35:34.519403+00");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_arrays() {
+        // ARRAY arrives as JSON array
+        let int_array = serde_json::json!([1, 2, 3]);
+        let formatted = format_value(&int_array);
+        assert!(formatted.contains("1"));
+        assert!(formatted.contains("2"));
+        assert!(formatted.contains("3"));
+
+        // Empty array
+        let empty = Value::Array(vec![]);
+        assert_eq!(format_value(&empty), "[]");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_text() {
+        // Regular TEXT
+        let text = Value::String("regular text".to_string());
+        assert_eq!(format_value(&text), "regular text");
+
+        // TEXT with JSON-like content (still a string, not parsed)
+        let json_text = Value::String("{\"key\": \"value\"}".to_string());
+        assert_eq!(format_value(&json_text), "{\"key\": \"value\"}");
+
+        // Unicode text
+        let unicode = Value::String("🔥 emoji text".to_string());
+        assert_eq!(format_value(&unicode), "🔥 emoji text");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_bytea() {
+        // BYTEA arrives as hex-encoded string
+        let bytea = Value::String("\\x48656c6c6f".to_string());
+        assert_eq!(format_value(&bytea), "\\x48656c6c6f");
+
+        // Should display as-is without interpretation
+        let output = format_value(&bytea);
+        assert!(output.starts_with("\\x"), "BYTEA should preserve hex encoding");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_geography() {
+        // GEOGRAPHY arrives as WKB (Well-Known Binary) format in hex
+        let geo_point = Value::String("0101000020E6100000FEFFFFFFFFFFEF3F0000000000000040".to_string());
+        assert_eq!(format_value(&geo_point), "0101000020E6100000FEFFFFFFFFFFEF3F0000000000000040");
+
+        // Should display as hex string without interpretation
+        let output = format_value(&geo_point);
+        assert!(output.len() > 20, "GEOGRAPHY hex strings are long");
+        assert!(!output.starts_with('"'), "Should not have quotes in display");
+    }
+
+    #[test]
+    fn test_format_value_firebolt_null_and_bool() {
+        // NULL rendered as "NULL" string for clarity
+        assert_eq!(format_value(&Value::Null), "NULL");
+
+        // BOOLEAN rendered as lowercase
+        assert_eq!(format_value(&Value::Bool(true)), "true");
+        assert_eq!(format_value(&Value::Bool(false)), "false");
+    }
+
+    #[test]
+    fn test_format_value_csv_null_handling() {
+        // In CSV, NULL should be empty string (not "NULL")
+        assert_eq!(format_value_csv(&Value::Null), "");
+
+        // But in table format, NULL should be "NULL"
+        assert_eq!(format_value(&Value::Null), "NULL");
+
+        // BIGINT strings should work in CSV too
+        let bigint = Value::String("9223372036854775807".to_string());
+        assert_eq!(format_value_csv(&bigint), "9223372036854775807");
+    }
+
+    #[test]
     fn test_format_value_null() {
         assert_eq!(format_value(&Value::Null), "NULL");
     }
