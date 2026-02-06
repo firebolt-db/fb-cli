@@ -286,28 +286,37 @@ pub fn render_table_expanded(columns: &[ResultColumn], rows: &[Vec<Value>], term
                     column.set_constraint(ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(max_col_width as u16)));
                 }
             } else {
-                // Multiple columns or narrow content - distribute space evenly
+                // Multiple columns or narrow content - set minimum width to prevent wrapping
+                // but allow columns to be wider if needed for proper layout
                 for (i, &min_width) in min_widths.iter().enumerate() {
                     let extra = extra_per_col + if i < remainder { 1 } else { 0 };
                     let target_width = min_width + extra;
                     if let Some(column) = table.column_mut(i) {
-                        column.set_constraint(ColumnConstraint::Boundaries {
-                            lower: ComfyWidth::Fixed(target_width as u16),
-                            upper: ComfyWidth::Fixed(target_width as u16),
-                        });
+                        // Use LowerBoundary instead of fixed boundaries to prevent content wrapping
+                        column.set_constraint(ColumnConstraint::LowerBoundary(ComfyWidth::Fixed(target_width as u16)));
                     }
                 }
             }
 
             // Render this chunk
             let table_str = table.to_string();
+            let lines: Vec<&str> = table_str.lines().collect();
+            let num_lines = lines.len();
 
             // For the first chunk, skip the top border (we have our custom header)
             // For subsequent chunks, include everything
             let start_line = if chunk_idx == 0 { 1 } else { 0 };
 
-            for (line_idx, line) in table_str.lines().enumerate() {
+            // Check if this is the last chunk
+            let is_last_chunk = chunk_idx == column_chunks.len() - 1;
+
+            for (line_idx, line) in lines.iter().enumerate() {
                 if line_idx >= start_line {
+                    // Skip the bottom border for non-last chunks to reduce visual clutter
+                    if !is_last_chunk && line_idx == num_lines - 1 {
+                        continue;
+                    }
+
                     // Pad the line to terminal width for alignment
                     // Use display_width to ignore ANSI escape codes
                     let line_len = display_width(line);
