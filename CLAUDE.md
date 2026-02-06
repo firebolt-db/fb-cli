@@ -86,6 +86,47 @@ cargo clippy
 - Headers: `user-agent`, `Firebolt-Protocol-Version: 2.3`, `authorization` (Bearer token)
 - Handles special response headers: `firebolt-update-parameters`, `firebolt-remove-parameters`, `firebolt-update-endpoint`
 
+### Data Type Handling in JSONLines_Compact Format
+
+**Firebolt Serialization Patterns:**
+
+The `JSONLines_Compact` format uses type-specific JSON serialization to preserve precision and avoid limitations of JSON numbers:
+
+| Firebolt Type | JSON Representation | Example |
+|---------------|---------------------|---------|
+| INT | JSON number | `42` |
+| BIGINT | JSON **string** | `"9223372036854775807"` |
+| NUMERIC/DECIMAL | JSON **string** | `"1.23"` |
+| DOUBLE/REAL | JSON number | `3.14` |
+| TEXT | JSON string | `"text"` |
+| DATE | JSON string (ISO) | `"2026-02-06"` |
+| TIMESTAMP | JSON string | `"2026-02-06 15:35:34+00"` |
+| BYTEA | JSON string (hex) | `"\\x48656c6c6f"` |
+| GEOGRAPHY | JSON string (WKB hex) | `"0101000020E6..."` |
+| ARRAY | JSON array | `[1,2,3]` |
+| BOOLEAN | JSON boolean | `true` |
+| NULL | JSON `null` | `null` |
+
+**Why certain types are JSON strings:**
+- **BIGINT/NUMERIC**: JavaScript/JSON numbers are 64-bit floats with ~53 bits precision. BIGINT (64-bit int) and NUMERIC (38 digits) need strings to avoid precision loss.
+- **DATE/TIMESTAMP**: ISO format strings are portable and timezone-aware
+- **BYTEA**: Binary data encoded as hex strings (e.g., `\x48656c6c6f` = "Hello")
+- **GEOGRAPHY**: Spatial data in WKB (Well-Known Binary) format encoded as hex strings
+
+**Client-Side Rendering:**
+
+The `format_value()` function renders these types for display:
+- Numbers displayed via `.to_string()` (e.g., `42`, `3.14`)
+- Strings displayed as-is without quotes (BIGINT `"9223372036854775807"` → displays as `9223372036854775807`)
+- NULL rendered as SQL-style `"NULL"` string in tables, empty string in CSV
+- Arrays/Objects JSON-serialized with truncation at 1000 characters
+
+The `column_type` field from the server is currently unused but available for future type-aware formatting.
+
+**Server-Side Formats:**
+
+Formats like `PSQL`, `TabSeparatedWithNames`, etc. bypass client parsing entirely and are printed raw to stdout.
+
 ### URL Construction
 
 URLs are built from:

@@ -145,6 +145,31 @@ pub fn render_table(columns: &[ResultColumn], rows: &[Vec<Value>], max_value_len
     table.to_string()
 }
 
+/// Format a serde_json::Value for table display.
+///
+/// Handles Firebolt's JSONLines_Compact serialization format where different
+/// Firebolt types are serialized to JSON in specific ways:
+///
+/// **JSON Numbers** (rendered via `.to_string()`):
+/// - INT, DOUBLE, REAL → JSON numbers (e.g., `42`, `3.14`)
+///
+/// **JSON Strings** (rendered as-is without quotes):
+/// - BIGINT → JSON strings to preserve precision (e.g., `"9223372036854775807"`)
+/// - NUMERIC/DECIMAL → JSON strings for exact decimals (e.g., `"1.23"`)
+/// - TEXT → JSON strings (e.g., `"regular text"`)
+/// - DATE → ISO format strings (e.g., `"2026-02-06"`)
+/// - TIMESTAMP → ISO-like strings with timezone (e.g., `"2026-02-06 15:35:34+00"`)
+/// - BYTEA → Hex-encoded binary data (e.g., `"\\x48656c6c6f"`)
+/// - GEOGRAPHY → WKB (Well-Known Binary) format in hex (e.g., `"0101000020E6..."`)
+///
+/// **Other JSON Types**:
+/// - ARRAY → JSON arrays (e.g., `[1,2,3]`)
+/// - BOOLEAN → JSON booleans (e.g., `true`, `false`)
+/// - NULL → JSON `null`, rendered as "NULL" string for SQL-style display
+///
+/// Note: The `column_type` field in ResultColumn is available but currently unused.
+/// It could be leveraged for future type-aware formatting (e.g., right-align numbers,
+/// format dates differently).
 fn format_value(value: &Value) -> String {
     match value {
         Value::Null => "NULL".to_string(),
@@ -240,7 +265,13 @@ pub fn should_use_vertical_mode(columns: &[ResultColumn], terminal_width: u16, m
     chars_per_column < min_col_width
 }
 
-/// Format a Value for CSV output
+/// Format a serde_json::Value for CSV export.
+///
+/// Similar to format_value(), but with CSV-specific differences:
+/// - `Null` → empty string "" (CSV standard for null values)
+/// - Other types formatted identically to format_value()
+///
+/// Maintains Firebolt's serialization: BIGINT strings, NUMERIC strings, etc.
 fn format_value_csv(val: &Value) -> String {
     match val {
         Value::Null => String::new(),
