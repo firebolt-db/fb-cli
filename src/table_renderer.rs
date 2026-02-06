@@ -312,6 +312,11 @@ pub fn render_table_expanded(columns: &[ResultColumn], rows: &[Vec<Value>], term
 
             for (line_idx, line) in lines.iter().enumerate() {
                 if line_idx >= start_line {
+                    // Skip the bottom border for non-last chunks since the next chunk's top border provides separation
+                    if !is_last_chunk && line_idx == num_lines - 1 {
+                        continue;
+                    }
+
                     // Swap border characters for better visual hierarchy:
                     // - Use '-' for header separator (lighter, less prominent)
                     // - Use '=' for chunk separator at top of non-first chunks (heavier, more prominent)
