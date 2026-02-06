@@ -85,9 +85,25 @@ pub fn render_table(columns: &[ResultColumn], rows: &[Vec<Value>], max_value_len
     // Enable dynamic content arrangement for automatic wrapping
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
-    // Detect and set terminal width if available
-    if let Some((Width(w), _)) = terminal_size() {
-        table.set_width(w);
+    // Detect terminal width and calculate equal column widths
+    let terminal_width = terminal_size()
+        .map(|(Width(w), _)| w)
+        .unwrap_or(80);
+
+    table.set_width(terminal_width);
+
+    // Calculate equal column width if we have columns
+    let num_columns = columns.len();
+    if num_columns > 0 {
+        // Subtract 4 for outer table borders, then divide equally
+        let available_width = terminal_width.saturating_sub(4);
+        let col_width = available_width / num_columns as u16;
+
+        // Set explicit column constraints for equal widths
+        let constraints: Vec<ColumnConstraint> = (0..num_columns)
+            .map(|_| ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(col_width)))
+            .collect();
+        table.set_constraints(constraints);
     }
 
     // Add headers with styling
@@ -227,50 +243,16 @@ pub fn render_table_vertical(
     output
 }
 
-pub fn should_use_vertical_mode(columns: &[ResultColumn], rows: &[Vec<Value>], terminal_width: u16, max_value_length: usize) -> bool {
-    const MAX_HORIZONTAL_COLUMNS: usize = 15;
-    const BORDER_OVERHEAD_PER_COL: usize = 3;
-    const MIN_COL_WIDTH: usize = 5;
-
+pub fn should_use_vertical_mode(columns: &[ResultColumn], terminal_width: u16, min_col_width: usize) -> bool {
     let num_columns = columns.len();
-    let available_width = terminal_width as usize;
 
-    // Rule 1: Too many columns (more than 15 is definitely too many for horizontal)
-    if num_columns > MAX_HORIZONTAL_COLUMNS {
-        return true;
+    if num_columns == 0 {
+        return false;
     }
 
-    // Rule 2: Content-aware check - calculate if all columns can fit horizontally
-    // Use the same logic as vertical mode to calculate actual widths needed
-    if !rows.is_empty() {
-        let row = &rows[0];
-
-        // Calculate needed width for each column (applying same truncation as rendering)
-        let mut total_width = 4; // Table borders
-        for (col_idx, col) in columns.iter().enumerate() {
-            let col_name_width = col.name.len();
-            let value_width = if col_idx < row.len() {
-                let value_str = format_value(&row[col_idx]);
-                // Apply the same truncation logic as rendering to be consistent
-                if value_str.len() > max_value_length {
-                    max_value_length
-                } else {
-                    value_str.len()
-                }
-            } else {
-                0
-            };
-            let needed_width = col_name_width.max(value_width).max(MIN_COL_WIDTH);
-            total_width += needed_width + BORDER_OVERHEAD_PER_COL;
-        }
-
-        // If all columns don't fit, use vertical mode
-        if total_width > available_width {
-            return true;
-        }
-    }
-
-    false
+    // Simple logic: switch to vertical if each column has less than min_col_width chars available
+    let chars_per_column = (terminal_width as usize) / num_columns;
+    chars_per_column < min_col_width
 }
 
 /// Format a Value for CSV output
@@ -492,22 +474,23 @@ mod tests {
                 column_type: "text".to_string(),
             },
         ];
-        let rows = vec![vec![Value::Number(1.into()), Value::String("test".to_string())]];
 
         // Wide terminal, few columns -> horizontal
-        assert!(!should_use_vertical_mode(&columns, &rows, 150, 10000));
+        // 150 width / 2 columns = 75 chars per column >= 10, stay horizontal
+        assert!(!should_use_vertical_mode(&columns, 150, 10));
 
-        // Many columns with longer names -> vertical
+        // Many columns -> vertical
+        // 150 width / 20 columns = 7.5 chars per column < 10, use vertical
         let many_columns: Vec<ResultColumn> = (0..20)
             .map(|i| ResultColumn {
                 name: format!("column_name_{}", i),
                 column_type: "int".to_string(),
             })
             .collect();
-        let many_cols_row = vec![vec![Value::Number(1.into()); 20]];
-        assert!(should_use_vertical_mode(&many_columns, &many_cols_row, 150, 10000));
+        assert!(should_use_vertical_mode(&many_columns, 150, 10));
 
-        // Narrow terminal with many columns -> vertical
+        // Narrow terminal with few columns -> vertical
+        // 40 width / 5 columns = 8 chars per column < 10, use vertical
         let five_columns = vec![
             ResultColumn {
                 name: "a".to_string(),
@@ -530,34 +513,50 @@ mod tests {
                 column_type: "int".to_string(),
             },
         ];
-        let five_cols_row = vec![vec![Value::Number(1.into()); 5]];
-        assert!(should_use_vertical_mode(&five_columns, &five_cols_row, 40, 10000));
+        assert!(should_use_vertical_mode(&five_columns, 40, 10));
+
+        // Configurable threshold test
+        // 80 width / 10 columns = 8 chars per column
+        let ten_columns: Vec<ResultColumn> = (0..10)
+            .map(|i| ResultColumn {
+                name: format!("col{}", i),
+                column_type: "int".to_string(),
+            })
+            .collect();
+        // With threshold 8, should stay horizontal (8 >= 8)
+        assert!(!should_use_vertical_mode(&ten_columns, 80, 8));
+        // With threshold 9, should switch to vertical (8 < 9)
+        assert!(should_use_vertical_mode(&ten_columns, 80, 9));
     }
 
     #[test]
-    fn test_content_too_wide_detection() {
-        let columns = vec![
-            ResultColumn {
-                name: "column_one_with_long_name".to_string(),
+    fn test_vertical_mode_threshold() {
+        // Test that the decision is based purely on terminal_width / num_columns
+        let three_columns: Vec<ResultColumn> = (0..3)
+            .map(|i| ResultColumn {
+                name: format!("col{}", i),
                 column_type: "text".to_string(),
-            },
-            ResultColumn {
-                name: "column_two_with_long_name".to_string(),
-                column_type: "text".to_string(),
-            },
-            ResultColumn {
-                name: "column_three_also_long".to_string(),
-                column_type: "text".to_string(),
-            },
-        ];
-        let rows = vec![vec![
-            Value::String("this is a fairly long value".to_string()),
-            Value::String("another long value here".to_string()),
-            Value::String("and yet another long value".to_string()),
-        ]];
+            })
+            .collect();
 
-        // Should detect that columns won't fit and use vertical mode
-        assert!(should_use_vertical_mode(&columns, &rows, 80, 10000));
+        // 80 width / 3 columns = 26.6 chars per column >= 10, stay horizontal
+        assert!(!should_use_vertical_mode(&three_columns, 80, 10));
+
+        // But with a higher threshold of 30, should switch to vertical (26.6 < 30)
+        assert!(should_use_vertical_mode(&three_columns, 80, 30));
+
+        // Edge case: exactly at threshold
+        let eight_columns: Vec<ResultColumn> = (0..8)
+            .map(|i| ResultColumn {
+                name: format!("c{}", i),
+                column_type: "int".to_string(),
+            })
+            .collect();
+        // 80 width / 8 columns = 10 chars per column
+        // Should stay horizontal (10 >= 10)
+        assert!(!should_use_vertical_mode(&eight_columns, 80, 10));
+        // Should switch to vertical (10 < 11)
+        assert!(should_use_vertical_mode(&eight_columns, 80, 11));
     }
 
     #[test]

@@ -20,6 +20,15 @@ impl Or for String {
     }
 }
 
+// Default value functions for serde
+fn default_min_col_width() -> usize {
+    15
+}
+
+fn default_max_cell_length() -> usize {
+    1000
+}
+
 #[derive(Clone, Debug, Options, Deserialize, Serialize)]
 pub struct Args {
     #[options(help = "Run a single command and exit")]
@@ -90,6 +99,14 @@ pub struct Args {
     #[options(no_short, help = "Disable the spinner in CLI output")]
     #[serde(default)]
     pub no_spinner: bool,
+
+    #[options(no_short, help = "Minimum characters per column before switching to vertical mode", default = "15")]
+    #[serde(default = "default_min_col_width")]
+    pub min_col_width: usize,
+
+    #[options(no_short, help = "Maximum cell content length before truncation", default = "1000")]
+    #[serde(default = "default_max_cell_length")]
+    pub max_cell_length: usize,
 
     #[options(no_short, help = "Update default configuration values")]
     #[serde(skip_serializing, skip_deserializing)]
@@ -196,6 +213,19 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
     args.verbose = args.verbose || defaults.verbose;
     args.concise = args.concise || defaults.concise;
     args.hide_pii = args.hide_pii || defaults.hide_pii;
+
+    // Use defaults for numeric settings if not specified
+    if args.min_col_width == default_min_col_width() {
+        args.min_col_width = defaults.min_col_width;
+    }
+    if args.max_cell_length == default_max_cell_length() {
+        args.max_cell_length = defaults.max_cell_length;
+    }
+
+    args.database = args
+        .database
+        .or(args.core.then(|| String::from("firebolt")).unwrap_or(defaults.database))
+        .or(String::from("local_dev_db"));
 
     if args.core {
         args.host = args.host.or(String::from("localhost:3473"));
