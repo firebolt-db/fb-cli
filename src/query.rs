@@ -214,18 +214,18 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         .map(|(terminal_size::Width(w), _)| w)
                                         .unwrap_or(80);
 
-                                    let table_output = if context.args.is_expanded_mode() {
-                                        // Explicit expanded mode - stricter truncation (1000 chars)
-                                        table_renderer::render_table_expanded(&parsed.columns, &parsed.rows, terminal_width, 1000)
+                                    let table_output = if context.args.is_vertical_mode() {
+                                        // Explicit vertical mode - use vertical format with strict truncation
+                                        table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, 1000)
                                     } else {
                                         // Auto mode - intelligently choose display mode
                                         // Use 10000 char limit for detection (same as horizontal rendering)
-                                        if table_renderer::should_use_expanded_mode(&parsed.columns, &parsed.rows, terminal_width, 10000) {
+                                        if table_renderer::should_use_vertical_mode(&parsed.columns, &parsed.rows, terminal_width, 10000) {
                                             if context.args.verbose {
-                                                eprintln!("Note: Using expanded display mode (table too wide for horizontal display)");
+                                                eprintln!("Note: Using vertical display mode (table too wide for horizontal display)");
                                             }
-                                            // Auto-expanded mode - stricter truncation (1000 chars)
-                                            table_renderer::render_table_expanded(&parsed.columns, &parsed.rows, terminal_width, 1000)
+                                            // Auto-vertical mode - stricter truncation (1000 chars)
+                                            table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, 1000)
                                         } else {
                                             // Horizontal mode - generous truncation (10k chars)
                                             table_renderer::render_table(&parsed.columns, &parsed.rows, 10000)

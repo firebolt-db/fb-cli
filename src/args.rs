@@ -38,7 +38,7 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub database: String,
 
-    #[options(help = "Output format (auto, expanded, PSQL, TabSeparatedWithNames, JSONLines_Compact, ...)")]
+    #[options(help = "Output format (auto, vertical, PSQL, TabSeparatedWithNames, JSONLines_Compact, ...)")]
     #[serde(default)]
     pub format: String,
 
@@ -110,11 +110,11 @@ pub struct Args {
 
 impl Args {
     pub fn should_render_table(&self) -> bool {
-        self.format.eq_ignore_ascii_case("auto") || self.format.eq_ignore_ascii_case("expanded")
+        self.format.eq_ignore_ascii_case("auto") || self.format.eq_ignore_ascii_case("vertical")
     }
 
-    pub fn is_expanded_mode(&self) -> bool {
-        self.format.eq_ignore_ascii_case("expanded")
+    pub fn is_vertical_mode(&self) -> bool {
+        self.format.eq_ignore_ascii_case("vertical")
     }
 }
 
@@ -238,7 +238,7 @@ pub fn get_url(args: &Args) -> String {
     let is_localhost = args.host.starts_with("localhost");
     let protocol = if is_localhost { "http" } else { "https" };
     let output_format = if !args.format.is_empty() && !args.extra.iter().any(|e| e.starts_with("format=")) {
-        let server_format = if args.format.eq_ignore_ascii_case("auto") || args.format.eq_ignore_ascii_case("expanded") {
+        let server_format = if args.format.eq_ignore_ascii_case("auto") || args.format.eq_ignore_ascii_case("vertical") {
             "JSONLines_Compact"
         } else {
             &args.format

@@ -300,9 +300,9 @@ fn test_auto_format() {
 
 #[test]
 fn test_expanded_format() {
-    let (success, stdout, _) = run_fb(&["--core", "--format=expanded", "SELECT 1 as id, 'test' as name"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=vertical", "SELECT 1 as id, 'test' as name"]);
     assert!(success);
-    assert!(stdout.contains("╔═══ Row 1"));
+    assert!(stdout.contains("Row 1:"));
     assert!(stdout.contains("id"));
     assert!(stdout.contains("name"));
     assert!(stdout.contains("test"));
@@ -310,7 +310,7 @@ fn test_expanded_format() {
 
 #[test]
 fn test_wide_table_auto_expanded() {
-    // Query with many columns should automatically use expanded mode
+    // Query with many columns should automatically use vertical mode
     let (success, stdout, _) = run_fb(&[
         "--core",
         "--format=auto",
@@ -318,7 +318,7 @@ fn test_wide_table_auto_expanded() {
          7 as g, 8 as h, 9 as i, 10 as j, 11 as k, 12 as l, 13 as m",
     ]);
     assert!(success);
-    assert!(stdout.contains("╔═══ Row 1")); // Should auto-switch to expanded
+    assert!(stdout.contains("Row 1:")); // Should auto-switch to vertical
 }
 
 #[test]
@@ -326,6 +326,6 @@ fn test_narrow_table_stays_horizontal() {
     // Query with few columns should stay horizontal
     let (success, stdout, _) = run_fb(&["--core", "--format=auto", "SELECT 1 as id, 'test' as name"]);
     assert!(success);
-    assert!(!stdout.contains("╔═══ Row 1")); // Should NOT use expanded
+    assert!(!stdout.contains("Row 1:")); // Should NOT use vertical
     assert!(stdout.contains("id")); // But still contains data
 }
