@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rl: Editor<ReplHelper, _> = Editor::new()?;
     rl.set_helper(Some(helper));
 
+
     let history_path = history_path()?;
     rl.set_max_history_size(10_000)?;
     if rl.load_history(&history_path).is_err() {
