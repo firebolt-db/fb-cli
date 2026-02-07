@@ -30,6 +30,9 @@ enum PriorityClass {
     /// Unqualified columns from tables NOT in query
     UnqualifiedColumnOtherTable = 2000,
 
+    /// Functions - lower priority than columns
+    Function = 1000,
+
     /// System schema items - lowest priority
     SystemSchema = 0,
 }
@@ -118,6 +121,8 @@ impl PriorityScorer {
                     PriorityClass::UnqualifiedColumnOtherTable
                 }
             }
+
+            ItemType::Function => PriorityClass::Function,
         }
     }
 }

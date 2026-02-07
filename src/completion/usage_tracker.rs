@@ -5,13 +5,15 @@ use std::sync::{Arc, RwLock};
 pub enum ItemType {
     Table,
     Column,
+    Function,
 }
 
-/// Tracks usage frequency of tables and columns to enable intelligent prioritization
+/// Tracks usage frequency of tables, columns, and functions to enable intelligent prioritization
 pub struct UsageTracker {
     // Item name -> usage count
     table_counts: Arc<RwLock<HashMap<String, u32>>>,
     column_counts: Arc<RwLock<HashMap<String, u32>>>,
+    function_counts: Arc<RwLock<HashMap<String, u32>>>,
 
     // Recent queries (ring buffer of last N)
     recent_queries: Arc<RwLock<Vec<String>>>,
@@ -24,6 +26,7 @@ impl UsageTracker {
         Self {
             table_counts: Arc::new(RwLock::new(HashMap::new())),
             column_counts: Arc::new(RwLock::new(HashMap::new())),
+            function_counts: Arc::new(RwLock::new(HashMap::new())),
             recent_queries: Arc::new(RwLock::new(Vec::new())),
             max_recent,
         }
@@ -69,6 +72,10 @@ impl UsageTracker {
             }
             ItemType::Column => {
                 let counts = self.column_counts.read().unwrap();
+                counts.get(name).copied().unwrap_or(0)
+            }
+            ItemType::Function => {
+                let counts = self.function_counts.read().unwrap();
                 counts.get(name).copied().unwrap_or(0)
             }
         }

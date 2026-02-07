@@ -199,6 +199,31 @@ impl Completer for SqlCompleter {
                     }
                 }
             }
+
+            // Add function suggestions
+            let functions = self.cache.get_functions(partial);
+            for function in functions {
+                // Only add if it matches the partial
+                if function.to_lowercase().starts_with(&partial_lower) {
+                    // Give functions fixed priority class 1000 (below columns, above system schemas)
+                    let base_score = 1000u32;
+
+                    // Add small usage bonus if function has been used
+                    let usage_count = self.usage_tracker.get_count(ItemType::Function, &function);
+                    let usage_bonus = usage_count.min(99) * 10;
+
+                    let score = base_score + usage_bonus;
+
+                    // Add opening parenthesis to function names (no closing paren for easier typing)
+                    let function_with_paren = format!("{}(", function);
+
+                    scored.push(ScoredSuggestion {
+                        name: function_with_paren,
+                        item_type: ItemType::Column, // Use Column type for now
+                        score,
+                    });
+                }
+            }
         } // end of else block
 
         // Sort by score (descending - higher scores first)

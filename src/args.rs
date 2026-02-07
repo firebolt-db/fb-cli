@@ -30,7 +30,13 @@ fn default_max_cell_length() -> usize {
     1000
 }
 
+fn default_true() -> bool {
+    true
+}
 
+fn default_cache_ttl() -> u64 {
+    300
+}
 
 #[derive(Clone, Debug, Options, Deserialize, Serialize)]
 pub struct Args {

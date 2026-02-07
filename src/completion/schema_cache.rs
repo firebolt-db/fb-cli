@@ -142,6 +142,18 @@ impl SchemaCache {
             .collect()
     }
 
+    /// Get all function names matching prefix
+    pub fn get_functions(&self, prefix: &str) -> Vec<String> {
+        let prefix_lower = prefix.to_lowercase();
+        let functions = self.functions.read().unwrap();
+
+        functions
+            .iter()
+            .filter(|f| f.to_lowercase().starts_with(&prefix_lower))
+            .cloned()
+            .collect()
+    }
+
     /// Get all tables from a specific schema, optionally filtered by table name prefix
     pub fn get_tables_in_schema(&self, schema: &str, table_prefix: &str) -> Vec<String> {
         let schema_lower = schema.to_lowercase();
@@ -363,10 +375,10 @@ impl SchemaCache {
 
         let columns_result = query_silent(context, columns_query).await;
 
-        // Query functions
+        // Query functions (including system functions, excluding operators)
         let functions_query = "SELECT routine_name \
                               FROM information_schema.routines \
-                              WHERE routine_schema NOT IN ('information_schema', 'pg_catalog') \
+                              WHERE routine_type != 'OPERATOR' \
                               ORDER BY routine_name";
 
         let functions_result = query_silent(context, functions_query).await;
