@@ -10,6 +10,7 @@ pub struct ServiceAccountToken {
     pub until: u64,
 }
 
+#[derive(Clone)]
 pub struct Context {
     pub args: Args,
     pub url: String,

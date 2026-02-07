@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 
 mod args;
 mod auth;
+mod completion;
 mod context;
 mod highlight;
 mod meta_commands;
@@ -14,11 +15,14 @@ mod viewer;
 
 use args::get_args;
 use auth::maybe_authenticate;
+use completion::schema_cache::SchemaCache;
+use completion::SqlCompleter;
 use context::Context;
 use highlight::SqlHighlighter;
 use meta_commands::handle_meta_command;
 use query::{query, try_split_queries};
 use repl_helper::ReplHelper;
+use std::sync::Arc;
 use utils::history_path;
 use viewer::open_csvlens_viewer;
 
@@ -63,7 +67,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SqlHighlighter::new(false).unwrap() // Fallback to disabled
     });
 
-    let helper = ReplHelper::new(highlighter);
+    // Initialize schema cache for completion
+    let schema_cache = Arc::new(SchemaCache::new(context.args.completion_cache_ttl));
+    let completer = SqlCompleter::new(schema_cache.clone(), !context.args.no_completion);
+
+    let helper = ReplHelper::new(highlighter, completer);
     let mut rl: Editor<ReplHelper, _> = Editor::new()?;
     rl.set_helper(Some(helper));
 
@@ -87,6 +95,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         KeyEvent(KeyCode::Char('v'), Modifiers::CTRL),
         EventHandler::Simple(Cmd::Insert(1, "\\view".to_string())),
     );
+
+    // Spawn background task to refresh schema cache if completion is enabled
+    if !context.args.no_completion && is_tty {
+        let cache = schema_cache.clone();
+        let mut ctx_clone = context.clone();
+        tokio::spawn(async move {
+            if let Err(e) = cache.refresh(&mut ctx_clone).await {
+                // Report errors to help debug
+                eprintln!("Failed to refresh schema cache: {}", e);
+            }
+        });
+    }
 
     if is_tty && !context.args.concise {
         eprintln!("Type \\help for available commands or press Ctrl+V then Enter to view last result. Ctrl+D to exit.");
@@ -132,16 +152,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("Failed to open viewer: {}", e);
                     }
                     continue;
+                } else if trimmed == "\\refresh" || trimmed == "\\refresh_cache" {
+                    // Refresh schema cache for auto-completion
+                    if !context.args.no_completion {
+                        let cache = schema_cache.clone();
+                        let mut ctx_clone = context.clone();
+                        if is_tty {
+                            eprintln!("Refreshing schema cache...");
+                        }
+                        tokio::spawn(async move {
+                            if let Err(e) = cache.refresh(&mut ctx_clone).await {
+                                eprintln!("Failed to refresh schema cache: {}", e);
+                            } else {
+                                eprintln!("Schema cache refreshed successfully");
+                            }
+                        });
+                    } else {
+                        eprintln!("Auto-completion is disabled. Enable it with: set completion = on;");
+                    }
+                    continue;
                 } else if trimmed == "\\help" {
                     // Show help for special commands
                     eprintln!("Special commands:");
                     eprintln!("  \\view       - Open last query result in csvlens viewer");
                     eprintln!("                (requires client format: client:auto, client:vertical, or client:horizontal)");
+                    eprintln!("  \\refresh    - Manually refresh schema cache for auto-completion");
                     eprintln!("  \\help       - Show this help message");
                     eprintln!();
                     eprintln!("SQL-style commands:");
-                    eprintln!("  set format = <value>;   - Change output format");
-                    eprintln!("  unset format;           - Reset format to default");
+                    eprintln!("  set format = <value>;      - Change output format");
+                    eprintln!("  unset format;              - Reset format to default");
+                    eprintln!("  set completion = on/off;   - Enable/disable auto-completion");
+                    eprintln!("  unset completion;          - Reset completion to default");
                     eprintln!();
                     eprintln!("Format values:");
                     eprintln!("  Client-side rendering (prefix with 'client:'):");
@@ -195,6 +237,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if query(&mut context, q).await.is_err() {
                                 has_error = true;
                             }
+                        }
+
+                        // Update completer enabled state after processing queries
+                        // (in case set completion = on/off was executed)
+                        if let Some(helper) = rl.helper_mut() {
+                            helper.completer_mut().set_enabled(!context.args.no_completion);
                         }
 
                         buffer.clear();

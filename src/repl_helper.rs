@@ -1,29 +1,48 @@
+use crate::completion::SqlCompleter;
 use crate::highlight::SqlHighlighter;
-use rustyline::completion::Completer;
+use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::Helper;
+use rustyline::{Context, Helper};
 use std::borrow::Cow;
 
-/// REPL helper that integrates SqlHighlighter with rustyline
+/// REPL helper that integrates SqlHighlighter and SqlCompleter with rustyline
 pub struct ReplHelper {
     highlighter: SqlHighlighter,
+    completer: SqlCompleter,
 }
 
 impl ReplHelper {
-    /// Create a new REPL helper with the given highlighter
-    pub fn new(highlighter: SqlHighlighter) -> Self {
-        Self { highlighter }
+    /// Create a new REPL helper with the given highlighter and completer
+    pub fn new(highlighter: SqlHighlighter, completer: SqlCompleter) -> Self {
+        Self {
+            highlighter,
+            completer,
+        }
+    }
+
+    /// Get a mutable reference to the completer
+    pub fn completer_mut(&mut self) -> &mut SqlCompleter {
+        &mut self.completer
     }
 }
 
 // Implement the Helper trait (required)
 impl Helper for ReplHelper {}
 
-// Implement empty Completer (no autocompletion for now)
+// Delegate completion to SqlCompleter
 impl Completer for ReplHelper {
-    type Candidate = String;
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        self.completer.complete(line, pos, ctx)
+    }
 }
 
 // Implement empty Hinter (no hints for now)

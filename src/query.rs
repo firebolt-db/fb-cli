@@ -105,6 +105,17 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
 
     if key == "format" {
         context.args.format = String::from(value);
+    } else if key == "completion" {
+        // Handle completion setting
+        let val_lower = value.to_lowercase();
+        if val_lower == "on" || val_lower == "true" || val_lower == "1" {
+            context.args.no_completion = false;
+        } else if val_lower == "off" || val_lower == "false" || val_lower == "0" {
+            context.args.no_completion = true;
+        } else {
+            eprintln!("Invalid value for completion: {}. Use 'on' or 'off'.", value);
+        }
+        return Ok(true);
     } else {
         let mut buf: Vec<String> = vec![];
         buf.push(format!("{key}={value}"));
@@ -133,6 +144,9 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
         context.args.extra.retain(|e| !e.starts_with(prefix.as_str()));
         if key == "format" {
             context.args.format = String::from("PSQL");
+        } else if key == "completion" {
+            // Reset completion to default (enabled)
+            context.args.no_completion = false;
         } else if key == "database" {
             context.args.database = String::from("");
         }
@@ -143,6 +157,32 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
     }
 
     Ok(false)
+}
+
+// Execute a query silently and return the response body (for internal use like schema queries)
+pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let request = reqwest::Client::builder()
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
+        .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
+        .http2_keep_alive_while_idle(false)
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+        .build()?
+        .post(context.url.clone())
+        .header("user-agent", USER_AGENT)
+        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
+        .body(query_text.to_string());
+
+    let request = if let Some(sa_token) = &context.sa_token {
+        request.header("authorization", format!("Bearer {}", sa_token.token))
+    } else if !context.args.jwt.is_empty() {
+        request.header("authorization", format!("Bearer {}", context.args.jwt))
+    } else {
+        request
+    };
+
+    let response = request.send().await?;
+    let body = response.text().await?;
+    Ok(body)
 }
 
 // Send query and print result.
