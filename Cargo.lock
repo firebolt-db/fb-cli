@@ -810,7 +810,6 @@ dependencies = [
  "csvlens",
  "dirs",
  "gumdrop",
- "home 0.4.2",
  "once_cell",
  "openssl",
  "pest",
@@ -1060,16 +1059,6 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
-
-[[package]]
-name = "home"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "013e4e6e9134211bb4d6bf53dd8cfb75d9e2715cc33614b9c0827718c6fbe0b8"
-dependencies = [
- "scopeguard",
- "winapi",
-]
 
 [[package]]
 name = "home"
@@ -2245,7 +2234,7 @@ dependencies = [
  "cfg-if",
  "clipboard-win 4.5.0",
  "fd-lock",
- "home 0.5.12",
+ "home",
  "libc",
  "log",
  "memchr",

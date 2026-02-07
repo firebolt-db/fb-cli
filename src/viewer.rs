@@ -165,7 +165,12 @@ mod tests {
         // verify the file creation part
         let csv_path = temp_csv_path().unwrap();
         let mut file = File::create(&csv_path).unwrap();
-        write_result_as_csv(&mut file, &context.last_result.as_ref().unwrap().columns, &context.last_result.as_ref().unwrap().rows).unwrap();
+        write_result_as_csv(
+            &mut file,
+            &context.last_result.as_ref().unwrap().columns,
+            &context.last_result.as_ref().unwrap().rows,
+        )
+        .unwrap();
         drop(file);
 
         // Verify file exists and has content

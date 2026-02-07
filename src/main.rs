@@ -1,11 +1,13 @@
-use rustyline::{config::Configurer, error::ReadlineError, Cmd, DefaultEditor, EventHandler, KeyCode, KeyEvent, Modifiers};
+use rustyline::{config::Configurer, error::ReadlineError, Cmd, Editor, EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::io::IsTerminal;
 
 mod args;
 mod auth;
 mod context;
+mod highlight;
 mod meta_commands;
 mod query;
+mod repl_helper;
 mod table_renderer;
 mod utils;
 mod viewer;
@@ -13,8 +15,10 @@ mod viewer;
 use args::get_args;
 use auth::maybe_authenticate;
 use context::Context;
+use highlight::SqlHighlighter;
 use meta_commands::handle_meta_command;
 use query::{query, try_split_queries};
+use repl_helper::ReplHelper;
 use utils::history_path;
 use viewer::open_csvlens_viewer;
 
@@ -48,7 +52,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     context.is_interactive = is_tty;
 
-    let mut rl = DefaultEditor::new()?;
+    // Determine if colors should be used
+    let should_highlight = is_tty && context.args.should_use_colors();
+
+    // Initialize highlighter with error handling
+    let highlighter = SqlHighlighter::new(should_highlight).unwrap_or_else(|e| {
+        if context.args.verbose {
+            eprintln!("Failed to initialize syntax highlighting: {}", e);
+        }
+        SqlHighlighter::new(false).unwrap() // Fallback to disabled
+    });
+
+    let helper = ReplHelper::new(highlighter);
+    let mut rl: Editor<ReplHelper, _> = Editor::new()?;
+    rl.set_helper(Some(helper));
+
     let history_path = history_path()?;
     rl.set_max_history_size(10_000)?;
     if rl.load_history(&history_path).is_err() {
@@ -66,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Instead, we'll keep the two-step approach (Ctrl-V + Enter) which is explicit and clear
     rl.bind_sequence(
         KeyEvent(KeyCode::Char('v'), Modifiers::CTRL),
-        EventHandler::Simple(Cmd::Insert(1, "\\view".to_string()))
+        EventHandler::Simple(Cmd::Insert(1, "\\view".to_string())),
     );
 
     if is_tty && !context.args.concise {

@@ -77,7 +77,6 @@ pub struct Args {
     #[serde(default)]
     pub jwt_from_file: bool,
 
-
     #[options(
         no_short,
         help = "OAuth environment to use (e.g., 'app' or 'staging'). Used for Service Account authentication",
@@ -115,6 +114,10 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub update_defaults: bool,
 
+    #[options(no_short, help = "Disable syntax highlighting in REPL")]
+    #[serde(default)]
+    pub no_color: bool,
+
     #[options(help = "Print version")]
     #[serde(default)]
     pub version: bool,
@@ -138,7 +141,7 @@ impl Args {
     /// "client:auto" → "auto", "client:vertical" → "vertical", "PSQL" → ""
     pub fn get_display_mode(&self) -> &str {
         if self.format.starts_with("client:") {
-            &self.format[7..]  // Skip "client:" prefix
+            &self.format[7..] // Skip "client:" prefix
         } else {
             ""
         }
@@ -154,6 +157,22 @@ impl Args {
 
     pub fn is_auto_display(&self) -> bool {
         self.get_display_mode().eq_ignore_ascii_case("auto")
+    }
+
+    /// Determine if colors should be used for syntax highlighting
+    pub fn should_use_colors(&self) -> bool {
+        // Check NO_COLOR environment variable (standard: no-color.org)
+        if std::env::var("NO_COLOR").is_ok() {
+            return false;
+        }
+
+        // Check command-line flag
+        if self.no_color {
+            return false;
+        }
+
+        // Default: use colors
+        true
     }
 }
 
@@ -283,7 +302,8 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
     // Warn if user specified a client format name without the "client:" prefix
     if args.format.eq_ignore_ascii_case("auto")
         || args.format.eq_ignore_ascii_case("vertical")
-        || args.format.eq_ignore_ascii_case("horizontal") {
+        || args.format.eq_ignore_ascii_case("horizontal")
+    {
         eprintln!("Warning: Format '{}' is not supported by the server.", args.format);
         eprintln!("Did you mean '--format client:{}'?", args.format.to_lowercase());
         eprintln!("Client-side formats require the 'client:' prefix (e.g., client:auto, client:vertical, client:horizontal)");

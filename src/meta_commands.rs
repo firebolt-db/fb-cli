@@ -1,6 +1,6 @@
 use crate::context::Context;
-use regex::Regex;
 use once_cell::sync::Lazy;
+use regex::Regex;
 
 // Handle meta-commands (backslash commands)
 pub fn handle_meta_command(context: &mut Context, command: &str) -> Result<bool, Box<dyn std::error::Error>> {
@@ -45,9 +45,7 @@ pub fn handle_meta_command(context: &mut Context, command: &str) -> Result<bool,
 
 // Generic function to parse \set PROMPT command
 fn parse_set_prompt(command: &str, prompt_type: &str) -> Option<String> {
-    static SET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\set\s+(\w+)\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap()
-    });
+    static SET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)^\s*\\set\s+(\w+)\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*$"#).unwrap());
 
     if let Some(captures) = SET_PROMPT_RE.captures(command) {
         // Check if the prompt type matches
@@ -70,9 +68,7 @@ fn parse_set_prompt(command: &str, prompt_type: &str) -> Option<String> {
 
 // Generic function to parse \unset PROMPT command
 fn parse_unset_prompt(command: &str, prompt_type: &str) -> bool {
-    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)^\s*\\unset\s+(\w+)\s*$"#).unwrap()
-    });
+    static UNSET_PROMPT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)^\s*\\unset\s+(\w+)\s*$"#).unwrap());
 
     if let Some(captures) = UNSET_PROMPT_RE.captures(command) {
         if let Some(cmd_prompt_type) = captures.get(1) {
@@ -92,7 +88,7 @@ mod tests {
     fn test_set_prompt1_single_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT1 'custom_prompt> '"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -103,7 +99,7 @@ mod tests {
     fn test_set_prompt1_double_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT1 "custom_prompt> ""#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -114,7 +110,7 @@ mod tests {
     fn test_set_prompt1_no_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT1 custom_prompt>"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -125,7 +121,7 @@ mod tests {
     fn test_set_prompt2_single_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT2 'custom_prompt> '"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -136,7 +132,7 @@ mod tests {
     fn test_set_prompt2_double_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT2 "custom_prompt> ""#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -147,7 +143,7 @@ mod tests {
     fn test_set_prompt2_no_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT2 custom_prompt>"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -158,7 +154,7 @@ mod tests {
     fn test_set_prompt3_single_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT3 'custom_prompt> '"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -169,7 +165,7 @@ mod tests {
     fn test_set_prompt3_double_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT3 "custom_prompt> ""#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -180,7 +176,7 @@ mod tests {
     fn test_set_prompt3_no_quotes() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         let command = r#"\set PROMPT3 custom_prompt>"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(result);
@@ -191,11 +187,11 @@ mod tests {
     fn test_unset_prompt1() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // First set a prompt
         context.set_prompt1("test> ".to_string());
         assert_eq!(context.prompt1, Some("test> ".to_string()));
-        
+
         // Then unset it
         let command = r#"\unset PROMPT1"#;
         let result = handle_meta_command(&mut context, command).unwrap();
@@ -207,11 +203,11 @@ mod tests {
     fn test_unset_prompt2() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // First set a prompt
         context.set_prompt2("test> ".to_string());
         assert_eq!(context.prompt2, Some("test> ".to_string()));
-        
+
         // Then unset it
         let command = r#"\unset PROMPT2"#;
         let result = handle_meta_command(&mut context, command).unwrap();
@@ -223,11 +219,11 @@ mod tests {
     fn test_unset_prompt3() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // First set a prompt
         context.set_prompt3("test> ".to_string());
         assert_eq!(context.prompt3, Some("test> ".to_string()));
-        
+
         // Then unset it
         let command = r#"\unset PROMPT3"#;
         let result = handle_meta_command(&mut context, command).unwrap();
@@ -239,12 +235,12 @@ mod tests {
     fn test_invalid_commands() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // Invalid commands should return false
         let command = r#"\invalid command"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(!result);
-        
+
         let command = r#"\set INVALID value"#;
         let result = handle_meta_command(&mut context, command).unwrap();
         assert!(!result);
@@ -254,7 +250,7 @@ mod tests {
     fn test_whitespace_handling() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // Test with various whitespace
         let command = r#"  \set  PROMPT1  'test>'  "#;
         let result = handle_meta_command(&mut context, command).unwrap();
@@ -266,25 +262,25 @@ mod tests {
     fn test_prompt_independence() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // Set all three prompts to different values
         let command1 = r#"\set PROMPT1 'prompt1> '"#;
         let command2 = r#"\set PROMPT2 'prompt2> '"#;
         let command3 = r#"\set PROMPT3 'prompt3> '"#;
-        
+
         handle_meta_command(&mut context, command1).unwrap();
         handle_meta_command(&mut context, command2).unwrap();
         handle_meta_command(&mut context, command3).unwrap();
-        
+
         // Verify all prompts are set independently
         assert_eq!(context.prompt1, Some("prompt1> ".to_string()));
         assert_eq!(context.prompt2, Some("prompt2> ".to_string()));
         assert_eq!(context.prompt3, Some("prompt3> ".to_string()));
-        
+
         // Unset only PROMPT2
         let unset_command = r#"\unset PROMPT2"#;
         handle_meta_command(&mut context, unset_command).unwrap();
-        
+
         // Verify only PROMPT2 was unset
         assert_eq!(context.prompt1, Some("prompt1> ".to_string()));
         assert_eq!(context.prompt2, None);
@@ -295,16 +291,16 @@ mod tests {
     fn test_case_insensitive_prompt_types() {
         let args = get_args().unwrap();
         let mut context = Context::new(args);
-        
+
         // Test case insensitive prompt type matching
         let command1 = r#"\set prompt1 'test1> '"#;
         let command2 = r#"\set Prompt2 'test2> '"#;
         let command3 = r#"\set PROMPT3 'test3> '"#;
-        
+
         handle_meta_command(&mut context, command1).unwrap();
         handle_meta_command(&mut context, command2).unwrap();
         handle_meta_command(&mut context, command3).unwrap();
-        
+
         // Verify all prompts are set correctly regardless of case
         assert_eq!(context.prompt1, Some("test1> ".to_string()));
         assert_eq!(context.prompt2, Some("test2> ".to_string()));

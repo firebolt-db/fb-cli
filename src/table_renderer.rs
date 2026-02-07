@@ -95,9 +95,7 @@ pub fn render_table(columns: &[ResultColumn], rows: &[Vec<Value>], max_value_len
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
     // Detect terminal width and calculate equal column widths
-    let terminal_width = terminal_size()
-        .map(|(Width(w), _)| w)
-        .unwrap_or(80);
+    let terminal_width = terminal_size().map(|(Width(w), _)| w).unwrap_or(80);
 
     table.set_width(terminal_width);
 
@@ -197,12 +195,7 @@ fn format_value(value: &Value) -> String {
 /// Calculate the display width of a string, ignoring ANSI escape codes
 /// Render table in vertical format (two-column table with column names and values)
 /// Used when table is too wide for horizontal display in auto mode
-pub fn render_table_vertical(
-    columns: &[ResultColumn],
-    rows: &[Vec<Value>],
-    terminal_width: u16,
-    max_value_length: usize,
-) -> String {
+pub fn render_table_vertical(columns: &[ResultColumn], rows: &[Vec<Value>], terminal_width: u16, max_value_length: usize) -> String {
     let mut output = String::new();
 
     for (row_idx, row) in rows.iter().enumerate() {
@@ -218,8 +211,8 @@ pub fn render_table_vertical(
         // Second column (values): wide, allows wrapping
         let available_width = if terminal_width > 10 { terminal_width - 4 } else { 76 };
         table.set_constraints(vec![
-            ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(30)),  // Column names
-            ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(available_width.saturating_sub(30))),  // Values
+            ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(30)), // Column names
+            ColumnConstraint::UpperBoundary(ComfyWidth::Fixed(available_width.saturating_sub(30))), // Values
         ]);
 
         // Add rows (no header - just column name | value pairs)
@@ -235,9 +228,7 @@ pub fn render_table_vertical(
                 };
 
                 // Column name cell (cyan, bold)
-                let name_cell = Cell::new(&col.name)
-                    .fg(Color::Cyan)
-                    .add_attribute(Attribute::Bold);
+                let name_cell = Cell::new(&col.name).fg(Color::Cyan).add_attribute(Attribute::Bold);
 
                 // Value cell - color NULL values differently to distinguish from string "NULL"
                 let value_cell = if row[col_idx].is_null() {
@@ -308,11 +299,7 @@ pub fn write_result_as_csv<W: std::io::Write>(
     rows: &[Vec<Value>],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write CSV header
-    let header = columns
-        .iter()
-        .map(|col| escape_csv_field(&col.name))
-        .collect::<Vec<_>>()
-        .join(",");
+    let header = columns.iter().map(|col| escape_csv_field(&col.name)).collect::<Vec<_>>().join(",");
     writeln!(writer, "{}", header)?;
 
     // Write data rows
@@ -592,12 +579,10 @@ mod tests {
 
     #[test]
     fn test_render_vertical_value_truncation() {
-        let columns = vec![
-            ResultColumn {
-                name: "long_col".to_string(),
-                column_type: "text".to_string(),
-            },
-        ];
+        let columns = vec![ResultColumn {
+            name: "long_col".to_string(),
+            column_type: "text".to_string(),
+        }];
         let long_value = "a".repeat(2000); // 2000 characters
         let rows = vec![vec![Value::String(long_value)]];
 
@@ -785,7 +770,7 @@ mod tests {
             },
         ];
         let rows = vec![
-            vec![Value::Number(1.into()), Value::Null], // Real NULL
+            vec![Value::Number(1.into()), Value::Null],                       // Real NULL
             vec![Value::Number(2.into()), Value::String("NULL".to_string())], // String "NULL"
             vec![Value::Number(3.into()), Value::String("test".to_string())], // Regular string
         ];

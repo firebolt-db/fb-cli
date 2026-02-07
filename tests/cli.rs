@@ -1,6 +1,6 @@
+use serde_json;
 use std::io::Write;
 use std::process::Command;
-use serde_json;
 
 fn run_fb(args: &[&str]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_fb"))
@@ -181,12 +181,7 @@ fn test_command_parsing() {
 #[test]
 fn test_exiting() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&[
-            "--core",
-            "--concise",
-            "-f",
-            "TabSeparatedWithNamesAndTypes",
-        ])
+        .args(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
