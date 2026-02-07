@@ -1,6 +1,8 @@
 use crate::args::{get_url, Args};
+use crate::completion::usage_tracker::UsageTracker;
 use crate::table_renderer::ParsedResult;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ServiceAccountToken {
@@ -21,6 +23,7 @@ pub struct Context {
     pub last_result: Option<ParsedResult>,
     pub last_stats: Option<String>,
     pub is_interactive: bool,
+    pub usage_tracker: Option<Arc<UsageTracker>>,
 }
 
 impl Context {
@@ -36,6 +39,7 @@ impl Context {
             last_result: None,
             last_stats: None,
             is_interactive: false,
+            usage_tracker: None,
         }
     }
 

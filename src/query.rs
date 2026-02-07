@@ -215,6 +215,9 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
     let start = Instant::now();
 
+    // Clone query_text for tracking later
+    let query_text_for_tracking = query_text.clone();
+
     let mut request = reqwest::Client::builder()
         .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
         .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
@@ -448,6 +451,10 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
     if query_failed {
         Err("Query failed".into())
     } else {
+        // Track successful query for auto-completion prioritization
+        if let Some(usage_tracker) = &context.usage_tracker {
+            usage_tracker.track_query(&query_text_for_tracking);
+        }
         Ok(())
     }
 }

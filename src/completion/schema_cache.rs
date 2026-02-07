@@ -124,6 +124,126 @@ impl SchemaCache {
             .collect()
     }
 
+    /// Get all unique schema names matching prefix
+    pub fn get_schemas(&self, prefix: &str) -> Vec<String> {
+        let prefix_lower = prefix.to_lowercase();
+        let tables = self.tables.read().unwrap();
+
+        let mut schemas = std::collections::HashSet::new();
+        for table in tables.values() {
+            if !table.schema_name.is_empty() {
+                schemas.insert(table.schema_name.clone());
+            }
+        }
+
+        schemas
+            .into_iter()
+            .filter(|schema| schema.to_lowercase().starts_with(&prefix_lower))
+            .collect()
+    }
+
+    /// Get all tables from a specific schema, optionally filtered by table name prefix
+    pub fn get_tables_in_schema(&self, schema: &str, table_prefix: &str) -> Vec<String> {
+        let schema_lower = schema.to_lowercase();
+        let prefix_lower = table_prefix.to_lowercase();
+        let tables = self.tables.read().unwrap();
+
+        let mut result: Vec<String> = tables
+            .values()
+            .filter(|t| t.schema_name.to_lowercase() == schema_lower)
+            .filter(|t| {
+                if prefix_lower.is_empty() {
+                    true
+                } else {
+                    t.table_name.to_lowercase().starts_with(&prefix_lower)
+                }
+            })
+            .map(|t| t.table_name.clone())
+            .collect();
+
+        result.sort();
+        result
+    }
+
+    /// Get all table names with their schemas matching prefix
+    /// Returns Vec<(schema, table)>
+    pub fn get_tables_with_schema(&self, prefix: &str) -> Vec<(String, String)> {
+        let prefix_lower = prefix.to_lowercase();
+        let tables = self.tables.read().unwrap();
+
+        let mut result: Vec<(String, String)> = tables
+            .values()
+            .filter_map(|t| {
+                let short_name = t.table_name.to_lowercase();
+                let qualified_name = format!("{}.{}", t.schema_name, t.table_name).to_lowercase();
+
+                // Match either short name or qualified name
+                if short_name.starts_with(&prefix_lower) || qualified_name.starts_with(&prefix_lower) {
+                    Some((t.schema_name.clone(), t.table_name.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by table name for consistent ordering
+        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result
+    }
+
+    /// Get all column names with their table names matching prefix
+    /// Returns Vec<(Option<table>, column)>
+    pub fn get_columns_with_table(&self, prefix: &str) -> Vec<(Option<String>, String)> {
+        let prefix_lower = prefix.to_lowercase();
+        let tables = self.tables.read().unwrap();
+
+        let mut result: Vec<(Option<String>, String)> = Vec::new();
+        let mut seen_columns = HashSet::new();
+
+        for table in tables.values() {
+            for column in &table.columns {
+                let column_name = column.name.to_lowercase();
+                let qualified_name = format!("{}.{}", table.table_name, column.name).to_lowercase();
+
+                // Check if matches prefix (either column name or qualified name)
+                if column_name.starts_with(&prefix_lower) || qualified_name.starts_with(&prefix_lower) {
+                    // Track unique columns to avoid duplicates
+                    let key = format!("{}:{}", table.table_name, column.name);
+                    if !seen_columns.contains(&key) {
+                        result.push((Some(table.table_name.clone()), column.name.clone()));
+                        seen_columns.insert(key);
+                    }
+                }
+            }
+        }
+
+        // Sort by column name for consistent ordering
+        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result
+    }
+
+    /// Get the table for a given column name
+    /// Returns the first table that contains this column
+    pub fn get_table_for_column(&self, column_name: &str) -> Option<String> {
+        let tables = self.tables.read().unwrap();
+        let column_lower = column_name.to_lowercase();
+
+        for table in tables.values() {
+            for column in &table.columns {
+                if column.name.to_lowercase() == column_lower {
+                    // Return qualified table name
+                    return Some(if table.schema_name == "public" || table.schema_name.is_empty() {
+                        table.table_name.clone()
+                    } else {
+                        format!("{}.{}", table.schema_name, table.table_name)
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
     /// Synchronous method to get completions from cache
     pub fn get_completions(
         &self,
@@ -229,18 +349,16 @@ impl SchemaCache {
     }
 
     async fn do_refresh(&self, context: &mut Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Query tables
+        // Query tables (including system schemas - they'll be deprioritized by the scorer)
         let tables_query = "SELECT table_schema, table_name \
                            FROM information_schema.tables \
-                           WHERE table_schema NOT IN ('information_schema', 'pg_catalog') \
                            ORDER BY table_schema, table_name";
 
         let tables_result = query_silent(context, tables_query).await;
 
-        // Query columns
+        // Query columns (including system schemas - they'll be deprioritized by the scorer)
         let columns_query = "SELECT table_schema, table_name, column_name, data_type \
                             FROM information_schema.columns \
-                            WHERE table_schema NOT IN ('information_schema', 'pg_catalog') \
                             ORDER BY table_schema, table_name, ordinal_position";
 
         let columns_result = query_silent(context, columns_query).await;
@@ -323,10 +441,6 @@ impl SchemaCache {
                 eprintln!("Warning: Functions query failed: {}", e);
             }
         }
-
-        // Debug output
-        eprintln!("Schema cache loaded: {} tables, {} columns, {} functions",
-                  num_tables, num_columns, num_functions);
 
         Ok(())
     }
@@ -474,7 +588,9 @@ impl SchemaCache {
             }
         }
 
-        if result.is_empty() {
+        // Always return Some - empty result is valid (no functions defined)
+        // Only return None if output is completely empty/unparseable
+        if output.trim().is_empty() {
             None
         } else {
             Some(result)

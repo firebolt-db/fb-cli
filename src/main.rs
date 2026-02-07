@@ -16,6 +16,7 @@ mod viewer;
 use args::get_args;
 use auth::maybe_authenticate;
 use completion::schema_cache::SchemaCache;
+use completion::usage_tracker::UsageTracker;
 use completion::SqlCompleter;
 use context::Context;
 use highlight::SqlHighlighter;
@@ -67,9 +68,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SqlHighlighter::new(false).unwrap() // Fallback to disabled
     });
 
-    // Initialize schema cache for completion
+    // Initialize schema cache and usage tracker for completion
     let schema_cache = Arc::new(SchemaCache::new(context.args.completion_cache_ttl));
-    let completer = SqlCompleter::new(schema_cache.clone(), !context.args.no_completion);
+    let usage_tracker = Arc::new(UsageTracker::new(10)); // Track last 10 queries
+    let completer = SqlCompleter::new(schema_cache.clone(), usage_tracker.clone(), !context.args.no_completion);
+
+    // Store usage tracker in context for query tracking
+    context.usage_tracker = Some(usage_tracker.clone());
 
     let helper = ReplHelper::new(highlighter, completer);
     let mut rl: Editor<ReplHelper, _> = Editor::new()?;
