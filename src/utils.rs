@@ -32,6 +32,11 @@ pub fn sa_token_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(init_root_path()?.join("fb_sa_token"))
 }
 
+// Get credentials storage path on disk.
+pub fn credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(init_root_path()?.join("fb_credentials"))
+}
+
 // Format remaining time for token validity
 pub fn format_remaining_time(time: SystemTime, maybe_more: String) -> Result<String, Box<dyn std::error::Error>> {
     let remaining = time.duration_since(SystemTime::now())?.as_secs();

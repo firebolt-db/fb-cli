@@ -6,6 +6,7 @@ mod auth;
 mod context;
 mod meta_commands;
 mod query;
+mod show;
 mod utils;
 
 use args::get_args;
@@ -19,6 +20,65 @@ pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("fdb-cli/", env!("CARGO_PKG_VERSION"));
 pub const FIREBOLT_PROTOCOL_VERSION: &str = "2.3";
 
+fn print_help() {
+    println!("fb - Firebolt CLI v{}\n", CLI_VERSION);
+    println!("USAGE:");
+    println!("    fb [OPTIONS] [QUERY]");
+    println!("    fb auth [SUBCOMMAND]");
+    println!("    fb use <database|engine> <name>");
+    println!("    fb show <databases|engines>");
+    println!();
+    println!("QUERY EXECUTION:");
+    println!("    fb \"SELECT 42\"              Run a single query");
+    println!("    fb                           Start interactive REPL");
+    println!();
+    println!("AUTHENTICATION:");
+    println!("    fb auth                      Interactive authentication setup");
+    println!("    fb auth check                Show authentication status");
+    println!("    fb auth clear                Clear saved credentials");
+    println!();
+    println!("CONFIGURATION:");
+    println!("    fb use database <name>       Set default database");
+    println!("    fb use engine <name>         Set default engine (resolves endpoint)");
+    println!();
+    println!("DISCOVERY:");
+    println!("    fb show databases            List all available databases");
+    println!("    fb show engines              List all available engines");
+    println!();
+    println!("OPTIONS:");
+    println!("    --database <NAME>            Database name (transient override)");
+    println!("    -d <NAME>                    Alias for --database");
+    println!("    --host <HOSTNAME>            Hostname (transient override)");
+    println!("    --format <FORMAT>            Output format (PSQL, TabSeparatedWithNames, etc.)");
+    println!("    --label <LABEL>              Query label for tracking");
+    println!("    --sa-id <ID>                 Service Account ID (transient)");
+    println!("    --sa-secret <SECRET>         Service Account Secret (transient)");
+    println!("    --account-name <NAME>        Account name (transient)");
+    println!("    --verbose                    Enable verbose output");
+    println!("    --concise                    Suppress time statistics");
+    println!("    --no-spinner                 Disable spinner");
+    println!("    --version                    Print version");
+    println!("    --help                       Show this help message");
+    println!();
+    println!("EXAMPLES:");
+    println!("    # First-time setup");
+    println!("    fb auth");
+    println!();
+    println!("    # Discover available resources");
+    println!("    fb show databases");
+    println!("    fb show engines");
+    println!();
+    println!("    # Set defaults");
+    println!("    fb use database my_db");
+    println!("    fb use engine my_engine");
+    println!();
+    println!("    # Run queries");
+    println!("    fb \"SELECT 42\"");
+    println!("    fb -d other_db \"SELECT * FROM table\"  # Override default");
+    println!();
+    println!("For more information, visit: https://github.com/firebolt-db/fb-cli");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = get_args()?;
@@ -26,6 +86,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.version {
         println!("fb-cli version {}", CLI_VERSION);
         return Ok(());
+    }
+
+    // Handle 'help' command
+    if args.help || (!args.query.is_empty() && args.query[0] == "help") {
+        print_help();
+        return Ok(());
+    }
+
+    // Handle 'auth' subcommand
+    if !args.query.is_empty() && args.query[0] == "auth" {
+        // Check for auth subcommands (use positional words instead of flags)
+        if args.query.len() > 1 {
+            match args.query[1].as_str() {
+                "check" | "status" => return auth::show_auth_status(),
+                "clear" | "logout" => return auth::clear_auth(),
+                _ => {
+                    eprintln!("Unknown auth subcommand: {}", args.query[1]);
+                    eprintln!("Available: fb auth check, fb auth clear");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        // Interactive mode only
+        return auth::interactive_auth_setup().await;
+    }
+
+    // Handle 'use' subcommand for setting database/engine
+    if !args.query.is_empty() && args.query[0] == "use" {
+        if args.query.len() < 3 {
+            eprintln!("Usage: fb use database <name>");
+            eprintln!("       fb use engine <name>");
+            std::process::exit(1);
+        }
+
+        match args.query[1].as_str() {
+            "database" => {
+                let database_name = args.query[2].clone();
+                return auth::set_default_database(database_name).await;
+            }
+            "engine" => {
+                let engine_name = args.query[2].clone();
+                return auth::set_default_engine(engine_name).await;
+            }
+            _ => {
+                eprintln!("Unknown use target: {}", args.query[1]);
+                eprintln!("Available: database, engine");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Handle 'show' subcommand for listing databases/engines
+    if !args.query.is_empty() && args.query[0] == "show" {
+        if args.query.len() < 2 {
+            eprintln!("Usage: fb show databases");
+            eprintln!("       fb show engines");
+            std::process::exit(1);
+        }
+
+        match args.query[1].as_str() {
+            "databases" | "database" => {
+                return show::show_databases().await;
+            }
+            "engines" | "engine" => {
+                return show::show_engines().await;
+            }
+            _ => {
+                eprintln!("Unknown show target: {}", args.query[1]);
+                eprintln!("Available: databases, engines");
+                std::process::exit(1);
+            }
+        }
     }
 
     let mut context = Context::new(args);
