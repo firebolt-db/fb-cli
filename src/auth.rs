@@ -345,9 +345,32 @@ pub async fn interactive_auth_setup() -> Result<(), Box<dyn std::error::Error>> 
     let database_name = database_input.trim();
 
     let final_database = if !database_name.is_empty() {
-        temp_context.args.database = database_name.to_string();
-        temp_context.update_url();
-        Some(database_name.to_string())
+        // Validate database exists
+        println!("Validating database '{}'...", database_name);
+        let check_query = format!(
+            "SELECT catalog_name FROM information_schema.catalogs WHERE catalog_name = '{}'",
+            database_name.replace("'", "''")
+        );
+
+        match execute_query_internal(&mut temp_context, check_query).await {
+            Ok(response) => {
+                if response.contains(database_name) {
+                    println!("✓ Database '{}' validated", database_name);
+                    temp_context.args.database = database_name.to_string();
+                    temp_context.update_url();
+                    Some(database_name.to_string())
+                } else {
+                    eprintln!("⚠ Warning: Database '{}' does not exist.", database_name);
+                    eprintln!("  Skipping database configuration.");
+                    None
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠ Warning: Failed to validate database: {}", e);
+                eprintln!("  Skipping database configuration.");
+                None
+            }
+        }
     } else {
         None
     };
@@ -359,17 +382,38 @@ pub async fn interactive_auth_setup() -> Result<(), Box<dyn std::error::Error>> 
     let engine_name = engine_input.trim();
 
     let final_host = if !engine_name.is_empty() {
-        println!("Resolving engine '{}' endpoint...", engine_name);
+        // Validate engine exists
+        println!("Validating engine '{}'...", engine_name);
+        let check_query = format!(
+            "SELECT engine_name FROM information_schema.engines WHERE engine_name = '{}'",
+            engine_name.replace("'", "''")
+        );
 
-        // Run USE ENGINE to get the engine endpoint via Firebolt-Update-Endpoint header
-        let use_engine_query = format!("USE ENGINE {}", engine_name);
-        match crate::query::query(&mut temp_context, use_engine_query).await {
-            Ok(_) => {
-                println!("✓ Engine '{}' configured: {}", engine_name, temp_context.args.host);
-                Some(temp_context.args.host.clone())
+        match execute_query_internal(&mut temp_context, check_query).await {
+            Ok(response) => {
+                if response.contains(engine_name) {
+                    // Engine exists, now resolve its endpoint
+                    println!("Resolving engine '{}' endpoint...", engine_name);
+                    let use_engine_query = format!("USE ENGINE {}", engine_name);
+                    match crate::query::query(&mut temp_context, use_engine_query).await {
+                        Ok(_) => {
+                            println!("✓ Engine '{}' configured: {}", engine_name, temp_context.args.host);
+                            Some(temp_context.args.host.clone())
+                        }
+                        Err(e) => {
+                            eprintln!("⚠ Warning: Failed to resolve engine '{}' endpoint: {}", engine_name, e);
+                            eprintln!("  Continuing with system engine endpoint.");
+                            Some(system_engine_url)
+                        }
+                    }
+                } else {
+                    eprintln!("⚠ Warning: Engine '{}' does not exist.", engine_name);
+                    eprintln!("  Continuing with system engine endpoint.");
+                    Some(system_engine_url)
+                }
             }
             Err(e) => {
-                eprintln!("⚠ Warning: Failed to resolve engine '{}': {}", engine_name, e);
+                eprintln!("⚠ Warning: Failed to validate engine: {}", e);
                 eprintln!("  Continuing with system engine endpoint.");
                 Some(system_engine_url)
             }
