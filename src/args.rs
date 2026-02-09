@@ -153,7 +153,14 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         serde_yaml::from_str("")?
     };
 
-    let mut args = Args::parse_args_default_or_exit();
+    let args_vec: Vec<String> = std::env::args().skip(1).collect();
+    let mut args = match Args::parse_args_default(&args_vec) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        }
+    };
 
     args.extra = normalize_extras(args.extra, true)?;
 
