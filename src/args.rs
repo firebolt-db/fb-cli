@@ -30,6 +30,7 @@ fn default_max_cell_length() -> usize {
     1000
 }
 
+
 #[derive(Clone, Debug, Options, Deserialize, Serialize)]
 pub struct Args {
     #[options(help = "Run a single command and exit")]
@@ -108,6 +109,7 @@ pub struct Args {
     #[options(no_short, help = "Maximum cell content length before truncation", default = "1000")]
     #[serde(default = "default_max_cell_length")]
     pub max_cell_length: usize,
+
 
     #[options(no_short, help = "Update default configuration values")]
     #[serde(skip_serializing, skip_deserializing)]

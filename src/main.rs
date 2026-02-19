@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
+    context.is_interactive = is_tty;
 
     let mut rl = DefaultEditor::new()?;
     let history_path = history_path()?;

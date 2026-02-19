@@ -54,6 +54,41 @@ fn format_number(n: u64) -> String {
     result.chars().rev().collect()
 }
 
+const INTERACTIVE_MAX_ROWS: usize = 10_000;
+const INTERACTIVE_MAX_BYTES: usize = 1_048_576; // 1 MB
+
+// Limit rows for interactive display, returning a slice and an optional truncation message.
+// Bytes are estimated as the sum of JSON string lengths across all cells in a row.
+fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Value>], Option<String>) {
+    let mut byte_count = 0usize;
+    for (i, row) in rows.iter().enumerate() {
+        if i >= INTERACTIVE_MAX_ROWS {
+            return (
+                &rows[..i],
+                Some(format!(
+                    "Showing {} of {} rows (use \\view to see all).",
+                    format_number(i as u64),
+                    format_number(rows.len() as u64),
+                )),
+            );
+        }
+        for val in row {
+            byte_count += val.to_string().len();
+        }
+        if byte_count > INTERACTIVE_MAX_BYTES {
+            return (
+                &rows[..=i],
+                Some(format!(
+                    "Showing {} of {} rows (use \\view to see all).",
+                    format_number((i + 1) as u64),
+                    format_number(rows.len() as u64),
+                )),
+            );
+        }
+    }
+    (rows, None)
+}
+
 // Set parameters via query
 pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // set flag = value;
@@ -254,28 +289,44 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         .map(|(terminal_size::Width(w), _)| w)
                                         .unwrap_or(80);
 
+                                    let max_cell_length = if parsed.columns.len() == 1 {
+                                        context.args.max_cell_length * 5
+                                    } else {
+                                        context.args.max_cell_length
+                                    };
+
+                                    let (display_rows, limit_msg) = if context.is_interactive {
+                                        apply_output_limits(&parsed.rows)
+                                    } else {
+                                        (&parsed.rows[..], None)
+                                    };
+
                                     let table_output = if context.args.is_horizontal_display() {
                                         // Force horizontal table layout
-                                        table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
+                                        table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
                                     } else if context.args.is_vertical_display() {
                                         // Force vertical two-column layout
-                                        table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, context.args.max_cell_length)
+                                        table_renderer::render_table_vertical(&parsed.columns, display_rows, terminal_width, max_cell_length)
                                     } else if context.args.is_auto_display() {
                                         // Auto mode - intelligently choose display mode
                                         if table_renderer::should_use_vertical_mode(&parsed.columns, terminal_width, context.args.min_col_width) {
                                             if context.args.verbose {
                                                 eprintln!("Note: Using vertical display mode (table too wide for horizontal display)");
                                             }
-                                            table_renderer::render_table_vertical(&parsed.columns, &parsed.rows, terminal_width, context.args.max_cell_length)
+                                            table_renderer::render_table_vertical(&parsed.columns, display_rows, terminal_width, max_cell_length)
                                         } else {
-                                            table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
+                                            table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
                                         }
                                     } else {
                                         // Fallback to horizontal if format starts with client: but mode not recognized
-                                        table_renderer::render_table(&parsed.columns, &parsed.rows, context.args.max_cell_length)
+                                        table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
                                     };
 
                                     println!("{}", table_output);
+
+                                    if let Some(msg) = limit_msg {
+                                        eprintln!("{}", msg);
+                                    }
 
                                     // Store statistics for display later (after Time)
                                     context.last_stats = if !context.args.concise && parsed.statistics.is_some() {

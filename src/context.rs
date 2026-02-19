@@ -19,6 +19,7 @@ pub struct Context {
     pub prompt3: Option<String>,
     pub last_result: Option<ParsedResult>,
     pub last_stats: Option<String>,
+    pub is_interactive: bool,
 }
 
 impl Context {
@@ -33,6 +34,7 @@ impl Context {
             prompt3: None,
             last_result: None,
             last_stats: None,
+            is_interactive: false,
         }
     }
 
