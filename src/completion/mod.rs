@@ -157,31 +157,34 @@ impl SqlCompleter {
             for (schema, table) in table_metadata {
                 let short_name = table.clone();
                 let qualified_name = format!("{}.{}", schema, table);
+                let short_lower = short_name.to_lowercase();
+                let qualified_lower = qualified_name.to_lowercase();
 
                 let base_score = self.scorer.score(&short_name, ItemType::Table, &tables_in_line, None);
-                // Public-schema tables rank 500 points above other non-system schemas.
-                let score = if schema == "public" || schema.is_empty() {
-                    base_score + 500
+
+                if schema == "public" || schema.is_empty() {
+                    // Public tables: show as bare name; rank 500 above non-public.
+                    if short_lower.starts_with(&partial_lower) {
+                        scored.push(ScoredSuggestion {
+                            name: short_name.clone(),
+                            item_type: ItemType::Table,
+                            score: base_score + 500,
+                        });
+                    }
                 } else {
-                    base_score
-                };
-
-                if short_name.to_lowercase().starts_with(&partial_lower) {
-                    scored.push(ScoredSuggestion {
-                        name: short_name.clone(),
-                        item_type: ItemType::Table,
-                        score,
-                    });
-                }
-
-                if qualified_name.to_lowercase().starts_with(&partial_lower) &&
-                   (schema != "public" || partial.contains('.')) &&
-                   !partial_matches_schema {
-                    scored.push(ScoredSuggestion {
-                        name: qualified_name,
-                        item_type: ItemType::Table,
-                        score,
-                    });
+                    // Non-public tables: always show as schema.table.
+                    // Match when typing just the table name prefix ("ord") OR
+                    // the full qualified prefix ("myschema.ord").
+                    if (short_lower.starts_with(&partial_lower)
+                        || qualified_lower.starts_with(&partial_lower))
+                        && !partial_matches_schema
+                    {
+                        scored.push(ScoredSuggestion {
+                            name: qualified_name,
+                            item_type: ItemType::Table,
+                            score: base_score,
+                        });
+                    }
                 }
             }
 
