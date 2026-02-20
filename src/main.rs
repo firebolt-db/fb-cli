@@ -1,5 +1,5 @@
-use rustyline::{config::Configurer, error::ReadlineError, Cmd, Editor, EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::io::IsTerminal;
+use std::sync::Arc;
 
 mod args;
 mod auth;
@@ -8,8 +8,9 @@ mod context;
 mod highlight;
 mod meta_commands;
 mod query;
-mod repl_helper;
 mod table_renderer;
+mod tui;
+mod tui_msg;
 mod utils;
 mod viewer;
 
@@ -17,15 +18,9 @@ use args::get_args;
 use auth::maybe_authenticate;
 use completion::schema_cache::SchemaCache;
 use completion::usage_tracker::UsageTracker;
-use completion::SqlCompleter;
 use context::Context;
-use highlight::SqlHighlighter;
-use meta_commands::handle_meta_command;
-use query::{query, try_split_queries};
-use repl_helper::ReplHelper;
-use std::sync::Arc;
-use utils::history_path;
-use viewer::open_csvlens_viewer;
+use query::query;
+use tui::TuiApp;
 
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("fdb-cli/", env!("CARGO_PKG_VERSION"));
@@ -46,9 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query_text = if context.args.command.is_empty() {
         context.args.query.join(" ")
     } else {
-        format!("{} {}", context.args.command, context.args.query.join(" ")).to_string()
+        format!("{} {}", context.args.command, context.args.query.join(" "))
     };
 
+    // ── Headless mode: query provided on the command line ────────────────────
     if !query_text.is_empty() {
         query(&mut context, query_text).await?;
         return Ok(());
@@ -57,238 +53,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
     context.is_interactive = is_tty;
 
-    // Determine if colors should be used
-    let should_highlight = is_tty && context.args.should_use_colors();
+    // ── Non-interactive (pipe/redirect): fall through to headless behaviour ──
+    if !is_tty {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        let mut buffer = String::new();
+        let mut has_error = false;
 
-    // Initialize highlighter with error handling
-    let highlighter = SqlHighlighter::new(should_highlight).unwrap_or_else(|e| {
-        if context.args.verbose {
-            eprintln!("Failed to initialize syntax highlighting: {}", e);
-        }
-        SqlHighlighter::new(false).unwrap() // Fallback to disabled
-    });
+        for line in stdin.lock().lines() {
+            let line = line?;
+            buffer.push_str(&line);
 
-    // Initialize schema cache and usage tracker for completion
-    let schema_cache = Arc::new(SchemaCache::new(context.args.completion_cache_ttl));
-    let usage_tracker = Arc::new(UsageTracker::new(10)); // Track last 10 queries
-    let completer = SqlCompleter::new(schema_cache.clone(), usage_tracker.clone(), !context.args.no_completion);
-
-    // Store usage tracker in context for query tracking
-    context.usage_tracker = Some(usage_tracker.clone());
-
-    let helper = ReplHelper::new(highlighter, completer);
-    let mut rl: Editor<ReplHelper, _> = Editor::new()?;
-    rl.set_helper(Some(helper));
-
-
-    let history_path = history_path()?;
-    rl.set_max_history_size(10_000)?;
-    if rl.load_history(&history_path).is_err() {
-        if is_tty {
-            eprintln!("No previous history");
-        }
-    } else if context.args.verbose {
-        eprintln!("Loaded history from {:?} and set max_history_size = 10'000", history_path)
-    }
-
-    rl.bind_sequence(KeyEvent(KeyCode::Char('o'), Modifiers::CTRL), EventHandler::Simple(Cmd::Newline));
-
-    // Bind Ctrl-V to trigger viewer via special marker
-    // Using Cmd::AcceptLine alone won't work because we need to detect it was Ctrl-V
-    // Instead, we'll keep the two-step approach (Ctrl-V + Enter) which is explicit and clear
-    rl.bind_sequence(
-        KeyEvent(KeyCode::Char('v'), Modifiers::CTRL),
-        EventHandler::Simple(Cmd::Insert(1, "\\view".to_string())),
-    );
-
-    // Spawn background task to refresh schema cache if completion is enabled
-    if !context.args.no_completion && is_tty {
-        let cache = schema_cache.clone();
-        let mut ctx_clone = context.clone();
-        tokio::spawn(async move {
-            if let Err(e) = cache.refresh(&mut ctx_clone).await {
-                // Report errors to help debug
-                eprintln!("Failed to refresh schema cache: {}", e);
+            // Handle quit/exit before appending a newline (mirrors old REPL behaviour)
+            if buffer.trim() == "quit" || buffer.trim() == "exit" {
+                buffer.clear(); // don't process as SQL
+                break;
             }
-        });
-    }
 
-    if is_tty && !context.args.concise {
-        eprintln!("Type \\help for available commands or press Ctrl+V then Enter to view last result. Ctrl+D to exit.");
-    }
-    let mut buffer: String = String::new();
-    let mut has_error = false;
-    loop {
-        let prompt = if !is_tty {
-            // No prompt when stdout is not a terminal (e.g., piped)
-            ""
-        } else if !buffer.trim_start().is_empty() {
-            // Continuation prompt (PROMPT2)
-            if let Some(custom_prompt) = &context.prompt2 {
-                custom_prompt.as_str()
-            } else {
-                "~> "
-            }
-        } else if context.args.extra.iter().any(|arg| arg.starts_with("transaction_id=")) {
-            // Transaction prompt (PROMPT3)
-            if let Some(custom_prompt) = &context.prompt3 {
-                custom_prompt.as_str()
-            } else {
-                "*> "
-            }
-        } else {
-            // Normal prompt (PROMPT1)
-            if let Some(custom_prompt) = &context.prompt1 {
-                custom_prompt.as_str()
-            } else {
-                "=> "
-            }
-        };
-        let readline = rl.readline(prompt);
+            buffer.push('\n');
 
-        match readline {
-            Ok(line) => {
-                // Check for special commands
-                let trimmed = line.trim();
-
-                if trimmed == "\\view" {
-                    // Open csvlens viewer for last query result
-                    if let Err(e) = open_csvlens_viewer(&context) {
-                        eprintln!("Failed to open viewer: {}", e);
-                    }
-                    continue;
-                } else if trimmed == "\\refresh" || trimmed == "\\refresh_cache" {
-                    // Refresh schema cache for auto-completion
-                    if !context.args.no_completion {
-                        let cache = schema_cache.clone();
-                        let mut ctx_clone = context.clone();
-                        if is_tty {
-                            eprintln!("Refreshing schema cache...");
-                        }
-                        tokio::spawn(async move {
-                            if let Err(e) = cache.refresh(&mut ctx_clone).await {
-                                eprintln!("Failed to refresh schema cache: {}", e);
-                            } else {
-                                eprintln!("Schema cache refreshed successfully");
-                            }
-                        });
-                    } else {
-                        eprintln!("Auto-completion is disabled. Enable it with: set completion = on;");
-                    }
-                    continue;
-                } else if trimmed == "\\help" {
-                    // Show help for special commands
-                    eprintln!("Special commands:");
-                    eprintln!("  \\view       - Open last query result in csvlens viewer");
-                    eprintln!("                (requires client format: client:auto, client:vertical, or client:horizontal)");
-                    eprintln!("  \\refresh    - Manually refresh schema cache for auto-completion");
-                    eprintln!("  \\help       - Show this help message");
-                    eprintln!();
-                    eprintln!("SQL-style commands:");
-                    eprintln!("  set format = <value>;      - Change output format");
-                    eprintln!("  unset format;              - Reset format to default");
-                    eprintln!("  set completion = on/off;   - Enable/disable auto-completion");
-                    eprintln!("  unset completion;          - Reset completion to default");
-                    eprintln!();
-                    eprintln!("Format values:");
-                    eprintln!("  Client-side rendering (prefix with 'client:'):");
-                    eprintln!("    client:auto       - Smart switching between horizontal/vertical (default in interactive)");
-                    eprintln!("    client:horizontal - Force horizontal table layout");
-                    eprintln!("    client:vertical   - Force vertical two-column layout");
-                    eprintln!();
-                    eprintln!("  Server-side rendering (no prefix):");
-                    eprintln!("    PSQL              - PostgreSQL-style format (default in non-interactive)");
-                    eprintln!("    JSON              - JSON format");
-                    eprintln!("    CSV               - CSV format");
-                    eprintln!("    TabSeparatedWithNames    - TSV with headers");
-                    eprintln!("    JSONLines_Compact        - JSON Lines format");
-                    eprintln!();
-                    eprintln!("Examples:");
-                    eprintln!("  set format = client:vertical;  # Use client-side vertical display");
-                    eprintln!("  set format = JSON;             # Use server-side JSON output");
-                    eprintln!();
-                    eprintln!("Keyboard shortcuts:");
-                    eprintln!("  Ctrl+V then Enter - Open last query result in csvlens viewer (inserts \\view)");
-                    eprintln!("  Ctrl+O            - Insert newline (for multi-line queries)");
-                    eprintln!("  Ctrl+D            - Exit REPL");
-                    eprintln!("  Ctrl+C            - Cancel current input");
-                    continue;
-                }
-
-                buffer += line.as_str();
-
-                if buffer.trim() == "quit" || buffer.trim() == "exit" {
-                    break;
-                }
-
-                buffer += "\n";
-                if !line.is_empty() {
-                    // Check if this is a meta-command (backslash command)
-                    if line.trim().starts_with('\\') {
-                        if let Err(e) = handle_meta_command(&mut context, line.trim()) {
-                            eprintln!("Error processing meta-command: {}", e);
-                        }
-                        buffer.clear();
-                        continue;
-                    }
-
-                    let queries = try_split_queries(&buffer).unwrap_or_default();
-
-                    if !queries.is_empty() {
-                        rl.add_history_entry(buffer.trim())?;
-                        rl.append_history(&history_path)?;
-
-                        for q in queries {
-                            if query(&mut context, q).await.is_err() {
-                                has_error = true;
-                            }
-                        }
-
-                        // Update completer enabled state after processing queries
-                        // (in case set completion = on/off was executed)
-                        if let Some(helper) = rl.helper_mut() {
-                            helper.completer_mut().set_enabled(!context.args.no_completion);
-                        }
-
-                        buffer.clear();
+            let queries = query::try_split_queries(&buffer).unwrap_or_default();
+            if !queries.is_empty() {
+                for q in queries {
+                    if query(&mut context, q).await.is_err() {
+                        has_error = true;
                     }
                 }
-            }
-            Err(ReadlineError::Interrupted) => {
-                eprintln!("^C");
                 buffer.clear();
             }
-            Err(ReadlineError::Eof) => {
-                if !buffer.trim().is_empty() {
-                    buffer += ";";
-                    match try_split_queries(&buffer) {
-                        None => {}
-                        Some(queries) => {
-                            for q in queries {
-                                rl.add_history_entry(q.trim())?;
-                                rl.append_history(&history_path)?;
-                                if query(&mut context, q).await.is_err() {
-                                    has_error = true;
-                                }
-                            }
-                        }
+        }
+
+        // Try remaining buffer with implicit semicolon (EOF with incomplete query)
+        if !buffer.trim().is_empty() {
+            let text = format!("{};", buffer.trim());
+            if let Some(queries) = query::try_split_queries(&text) {
+                for q in queries {
+                    if query(&mut context, q).await.is_err() {
+                        has_error = true;
                     }
                 }
-                break;
-            }
-            Err(err) => {
-                eprintln!("Error: {:?}", err);
-                has_error = true;
-                break;
             }
         }
+
+        return if has_error { Err("One or more queries failed".into()) } else { Ok(()) };
     }
 
-    if context.args.verbose {
-        eprintln!("Saved history to {:?}", history_path)
-    }
+    // ── Interactive TUI mode ─────────────────────────────────────────────────
+    let schema_cache = Arc::new(SchemaCache::new(context.args.completion_cache_ttl));
+    let usage_tracker = Arc::new(UsageTracker::new(10));
+    context.usage_tracker = Some(usage_tracker);
 
-    if has_error {
+    let app = TuiApp::new(context, schema_cache);
+    let had_error = app.run().await?;
+
+    if had_error {
         Err("One or more queries failed".into())
     } else {
         Ok(())

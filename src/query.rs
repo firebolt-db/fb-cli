@@ -14,6 +14,22 @@ use crate::utils::spin;
 use crate::FIREBOLT_PROTOCOL_VERSION;
 use crate::USER_AGENT;
 
+// ── Output helpers ────────────────────────────────────────────────────────────
+// These macros route output through the TUI channel when running in TUI mode,
+// otherwise fall back to println!/eprintln! as before.
+
+macro_rules! out {
+    ($ctx:expr, $($arg:tt)*) => {
+        $ctx.emit(format!($($arg)*))
+    };
+}
+
+macro_rules! out_err {
+    ($ctx:expr, $($arg:tt)*) => {
+        $ctx.emit_err(format!($($arg)*))
+    };
+}
+
 // Format bytes with appropriate unit (B, KB, MB, GB, TB)
 fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
@@ -113,7 +129,7 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
         } else if val_lower == "off" || val_lower == "false" || val_lower == "0" {
             context.args.no_completion = true;
         } else {
-            eprintln!("Invalid value for completion: {}. Use 'on' or 'off'.", value);
+            out_err!(context, "Invalid value for completion: {}. Use 'on' or 'off'.", value);
         }
         return Ok(true);
     } else {
@@ -125,7 +141,7 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
         context.args.extra = normalize_extras(buf, false)?;
 
         if !context.args.concise && key == "engine" && value == "system" {
-            eprintln!("\nTo query SYSTEM engine please run 'unset engine'\n");
+            out_err!(context, "\nTo query SYSTEM engine please run 'unset engine'\n");
         }
     }
 
@@ -185,20 +201,89 @@ pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<Str
     Ok(body)
 }
 
+/// Render a result table to a String using the display mode from context.
+fn render_table_output(
+    context: &Context,
+    columns: &[table_renderer::ResultColumn],
+    rows: &[Vec<serde_json::Value>],
+    terminal_width: u16,
+    max_cell_length: usize,
+) -> String {
+    if context.args.is_horizontal_display() {
+        table_renderer::render_table(columns, rows, max_cell_length)
+    } else if context.args.is_vertical_display() {
+        table_renderer::render_table_vertical(columns, rows, terminal_width, max_cell_length)
+    } else if context.args.is_auto_display() {
+        if table_renderer::should_use_vertical_mode(columns, terminal_width, context.args.min_col_width) {
+            table_renderer::render_table_vertical(columns, rows, terminal_width, max_cell_length)
+        } else {
+            table_renderer::render_table(columns, rows, max_cell_length)
+        }
+    } else {
+        table_renderer::render_table(columns, rows, max_cell_length)
+    }
+}
+
+/// In TUI mode, emit a result table as pre-styled TuiLines (no ANSI round-trip).
+fn emit_table_tui(
+    context: &Context,
+    columns: &[table_renderer::ResultColumn],
+    rows: &[Vec<serde_json::Value>],
+    terminal_width: u16,
+    max_cell_length: usize,
+) {
+    // Leave a 1-column margin so the rightmost border isn't clipped by ratatui.
+    let tw = terminal_width.saturating_sub(1);
+    let lines = if context.args.is_vertical_display() {
+        table_renderer::render_vertical_table_to_tui_lines(columns, rows, tw, max_cell_length)
+    } else if context.args.is_horizontal_display() {
+        table_renderer::render_horizontal_forced_tui_lines(columns, rows, tw, max_cell_length)
+    } else {
+        table_renderer::render_table_to_tui_lines(columns, rows, tw, max_cell_length)
+    };
+    context.emit_styled_lines(lines);
+}
+
+/// Extract a human-readable scan-statistics string from the FINISH_SUCCESSFULLY payload.
+fn compute_stats(concise: bool, statistics: &Option<serde_json::Value>) -> Option<String> {
+    if concise || statistics.is_none() {
+        return None;
+    }
+    statistics.as_ref().and_then(|stats| {
+        stats.as_object().map(|obj| {
+            let scanned_cache = obj.get("scanned_bytes_cache").and_then(|v| v.as_u64()).unwrap_or(0);
+            let scanned_storage = obj.get("scanned_bytes_storage").and_then(|v| v.as_u64()).unwrap_or(0);
+            let rows_read = obj.get("rows_read").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total_scanned = scanned_cache + scanned_storage;
+            if rows_read > 0 || total_scanned > 0 {
+                Some(format!(
+                    "Scanned: {} rows, {} ({} local, {} remote)",
+                    format_number(rows_read),
+                    format_bytes(total_scanned),
+                    format_bytes(scanned_cache),
+                    format_bytes(scanned_storage),
+                ))
+            } else {
+                None
+            }
+        }).flatten()
+    })
+}
+
 // Send query and print result.
 pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<dyn std::error::Error>> {
     // Handle set/unset commands
     if set_args(context, &query_text)? {
-        if !context.args.concise && !context.args.hide_pii {
-            eprintln!("URL: {}", context.url);
+        if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
+            out_err!(context, "URL: {}", context.url);
         }
 
         return Ok(());
     }
 
     if unset_args(context, &query_text)? {
-        if !context.args.concise && !context.args.hide_pii {
-            eprintln!("URL: {}", context.url);
+        if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
+            out_err!(context, "URL: {}", context.url);
         }
 
         return Ok(());
@@ -209,8 +294,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
     }
 
     if context.args.verbose {
-        eprintln!("URL: {}", context.url);
-        eprintln!("QUERY: {}", query_text);
+        out_err!(context, "URL: {}", context.url);
+        out_err!(context, "QUERY: {}", query_text);
     }
 
     let start = Instant::now();
@@ -240,7 +325,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
     let async_resp = request.send();
 
     let finish_token = CancellationToken::new();
-    let maybe_spin = if context.args.no_spinner || context.args.concise {
+    // Skip the spinner when running inside the TUI (it has its own progress indicator).
+    let maybe_spin = if context.is_tui() || context.args.no_spinner || context.args.concise {
         None
     } else {
         let token_clone = finish_token.clone();
@@ -249,16 +335,25 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         }))
     };
 
+    // Build a cancel future: prefer the TUI's CancellationToken, fall back to SIGINT.
+    let cancel = context.query_cancel.clone();
+
     let mut query_failed = false;
 
     select! {
-        _ = signal::ctrl_c() => {
+        _ = async {
+            if let Some(token) = cancel {
+                token.cancelled().await;
+            } else {
+                let _ = signal::ctrl_c().await;
+            }
+        } => {
             finish_token.cancel();
             if let Some(spin) = maybe_spin {
                 spin.await?;
             }
             if !context.args.concise {
-                eprintln!("^C");
+                out_err!(context, "^C");
             }
             query_failed = true;
         }
@@ -271,7 +366,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
             let mut maybe_request_id: Option<String> = None;
             match response {
-                Ok(resp) => {
+                Ok(mut resp) => {
                     let mut updated_url = false;
                     for (header, value) in resp.headers() {
                         if header == "firebolt-remove-parameters" {
@@ -307,127 +402,181 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             updated_url = true;
                         }
                     }
-                    if updated_url &&  !context.args.concise && !context.args.hide_pii {
-                        eprintln!("URL: {}", context.url);
+                    if updated_url && !context.args.concise && !context.args.hide_pii && !context.is_tui() {
+                        out_err!(context, "URL: {}", context.url);
                     }
 
                     let status = resp.status();
-                    let body = resp.text().await?;
 
-                    // on stdout, on purpose
-                    if context.args.should_render_table() {
-                        match table_renderer::parse_jsonlines_compact(&body) {
-                            Ok(parsed) => {
-                                // Store result for interactive viewing
-                                context.last_result = Some(parsed.clone());
+                    if context.args.should_render_table() && context.is_interactive {
+                        // ── Streaming path: emit display rows at the limit,
+                        //    keep collecting all rows for csvlens. ────────────
+                        use table_renderer::{ErrorDetail, JsonLineMessage, ParsedResult, ResultColumn};
 
-                                if let Some(errors) = parsed.errors {
-                                    // Display errors
-                                    for error in errors {
-                                        eprintln!("Error: {}", error.description);
+                        let mut columns: Vec<ResultColumn> = Vec::new();
+                        let mut display_rows: Vec<Vec<serde_json::Value>> = Vec::new();
+                        let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
+                        let mut statistics: Option<serde_json::Value> = None;
+                        let mut errors: Option<Vec<ErrorDetail>> = None;
+                        let mut display_emitted = false;
+                        let mut display_byte_count = 0usize;
+
+                        let terminal_width = terminal_size::terminal_size()
+                            .map(|(terminal_size::Width(w), _)| w)
+                            .unwrap_or(80);
+
+                        let mut line_buf = String::new();
+                        let mut stream_err: Option<String> = None;
+
+                        'stream: loop {
+                            match resp.chunk().await {
+                                Err(e) => { stream_err = Some(e.to_string()); break 'stream; }
+                                Ok(None) => break 'stream,
+                                Ok(Some(chunk)) => {
+                                    match std::str::from_utf8(&chunk) {
+                                        Err(_) => { stream_err = Some("Invalid UTF-8 in response".into()); break 'stream; }
+                                        Ok(s) => line_buf.push_str(s),
                                     }
-                                } else if !parsed.columns.is_empty() {
-                                    // Get terminal width for intelligent display decisions
-                                    let terminal_width = terminal_size::terminal_size()
-                                        .map(|(terminal_size::Width(w), _)| w)
-                                        .unwrap_or(80);
+                                    while let Some(nl) = line_buf.find('\n') {
+                                        let line = line_buf[..nl].trim().to_string();
+                                        line_buf.drain(..nl + 1);
+                                        if line.is_empty() { continue; }
 
-                                    let max_cell_length = if parsed.columns.len() == 1 {
-                                        context.args.max_cell_length * 5
-                                    } else {
-                                        context.args.max_cell_length
-                                    };
-
-                                    let (display_rows, limit_msg) = if context.is_interactive {
-                                        apply_output_limits(&parsed.rows)
-                                    } else {
-                                        (&parsed.rows[..], None)
-                                    };
-
-                                    let table_output = if context.args.is_horizontal_display() {
-                                        // Force horizontal table layout
-                                        table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
-                                    } else if context.args.is_vertical_display() {
-                                        // Force vertical two-column layout
-                                        table_renderer::render_table_vertical(&parsed.columns, display_rows, terminal_width, max_cell_length)
-                                    } else if context.args.is_auto_display() {
-                                        // Auto mode - intelligently choose display mode
-                                        if table_renderer::should_use_vertical_mode(&parsed.columns, terminal_width, context.args.min_col_width) {
-                                            if context.args.verbose {
-                                                eprintln!("Note: Using vertical display mode (table too wide for horizontal display)");
-                                            }
-                                            table_renderer::render_table_vertical(&parsed.columns, display_rows, terminal_width, max_cell_length)
-                                        } else {
-                                            table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
-                                        }
-                                    } else {
-                                        // Fallback to horizontal if format starts with client: but mode not recognized
-                                        table_renderer::render_table(&parsed.columns, display_rows, max_cell_length)
-                                    };
-
-                                    println!("{}", table_output);
-
-                                    if let Some(msg) = limit_msg {
-                                        eprintln!("{}", msg);
-                                    }
-
-                                    // Store statistics for display later (after Time)
-                                    context.last_stats = if !context.args.concise && parsed.statistics.is_some() {
-                                        parsed.statistics.as_ref().and_then(|stats| {
-                                            stats.as_object().map(|obj| {
-                                                let scanned_cache = obj.get("scanned_bytes_cache")
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0);
-                                                let scanned_storage = obj.get("scanned_bytes_storage")
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0);
-                                                let rows_read = obj.get("rows_read")
-                                                    .and_then(|v| v.as_u64())
-                                                    .unwrap_or(0);
-
-                                                let total_scanned = scanned_cache + scanned_storage;
-
-                                                // Format: "Scanned: x rows, y B (..B local, ..B remote)"
-                                                if rows_read > 0 || total_scanned > 0 {
-                                                    Some(format!(
-                                                        "Scanned: {} rows, {} ({} local, {} remote)",
-                                                        format_number(rows_read),
-                                                        format_bytes(total_scanned),
-                                                        format_bytes(scanned_cache),
-                                                        format_bytes(scanned_storage)
-                                                    ))
-                                                } else {
-                                                    None
+                                        match serde_json::from_str::<JsonLineMessage>(&line) {
+                                            Err(e) => { stream_err = Some(e.to_string()); break 'stream; }
+                                            Ok(msg) => match msg {
+                                                JsonLineMessage::Start { result_columns, .. } => {
+                                                    columns = result_columns;
                                                 }
-                                            }).flatten()
-                                        })
-                                    } else {
-                                        None
-                                    };
+                                                JsonLineMessage::Data { data } => {
+                                                    for row in data {
+                                                        if !display_emitted {
+                                                            let row_bytes: usize = row.iter().map(|v| v.to_string().len()).sum();
+                                                            let over_rows = display_rows.len() >= INTERACTIVE_MAX_ROWS;
+                                                            let over_bytes = display_byte_count + row_bytes > INTERACTIVE_MAX_BYTES;
+                                                            if over_rows || over_bytes {
+                                                                let max_cell = if columns.len() == 1 { context.args.max_cell_length * 5 } else { context.args.max_cell_length };
+                                                                if context.is_tui() {
+                                                                    emit_table_tui(context, &columns, &display_rows, terminal_width, max_cell);
+                                                                } else {
+                                                                    let rendered = render_table_output(context, &columns, &display_rows, terminal_width, max_cell);
+                                                                    out!(context, "{}", rendered);
+                                                                }
+                                                                out_err!(context, "Showing first {} rows — collecting remainder for \\view...",
+                                                                    format_number(display_rows.len() as u64));
+                                                                display_emitted = true;
+                                                            } else {
+                                                                display_byte_count += row_bytes;
+                                                                display_rows.push(row.clone());
+                                                            }
+                                                        }
+                                                        all_rows.push(row);
+                                                    }
+                                                }
+                                                JsonLineMessage::FinishSuccessfully { statistics: s } => {
+                                                    statistics = s;
+                                                }
+                                                JsonLineMessage::FinishWithErrors { errors: errs } => {
+                                                    errors = Some(errs);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                // Fallback to raw output on parse error
-                                if context.args.verbose {
-                                    eprintln!("Failed to parse table format: {}", e);
-                                }
-                                print!("{}", body);
                             }
                         }
-                    } else {
-                        // Original behavior for other formats
-                        print!("{}", body);
-                    }
 
-                    if !status.is_success() {
-                        query_failed = true;
+                        if let Some(e) = stream_err {
+                            if context.args.verbose {
+                                out_err!(context, "Failed to read/parse response: {}", e);
+                            } else {
+                                out_err!(context, "Error: {}", e);
+                            }
+                            query_failed = true;
+                        } else if let Some(errs) = errors {
+                            for err in errs {
+                                out_err!(context, "Error: {}", err.description);
+                            }
+                            query_failed = true;
+                        } else if !columns.is_empty() {
+                            if !display_emitted {
+                                // All rows fit within limits — emit now
+                                let max_cell = if columns.len() == 1 { context.args.max_cell_length * 5 } else { context.args.max_cell_length };
+                                if context.is_tui() {
+                                    emit_table_tui(context, &columns, &all_rows, terminal_width, max_cell);
+                                } else {
+                                    let rendered = render_table_output(context, &columns, &all_rows, terminal_width, max_cell);
+                                    out!(context, "{}", rendered);
+                                }
+                            } else {
+                                // Partial display was already emitted; show the final total
+                                out_err!(context, "Showing {} of {} rows (use \\view to see all).",
+                                    format_number(display_rows.len() as u64),
+                                    format_number(all_rows.len() as u64));
+                            }
+                            context.last_result = Some(ParsedResult {
+                                columns: columns.clone(),
+                                rows: all_rows,
+                                statistics: statistics.clone(),
+                                errors: None,
+                            });
+                            context.last_stats = compute_stats(context.args.concise, &statistics);
+                        }
+
+                        if !status.is_success() {
+                            query_failed = true;
+                        }
+                    } else {
+                        // ── Buffered path (non-interactive or server-rendered) ──
+                        let body = resp.text().await?;
+
+                        if context.args.should_render_table() {
+                            match table_renderer::parse_jsonlines_compact(&body) {
+                                Ok(parsed) => {
+                                    context.last_result = Some(parsed.clone());
+                                    if let Some(errors) = parsed.errors {
+                                        for error in errors {
+                                            out_err!(context, "Error: {}", error.description);
+                                        }
+                                    } else if !parsed.columns.is_empty() {
+                                        let terminal_width = terminal_size::terminal_size()
+                                            .map(|(terminal_size::Width(w), _)| w)
+                                            .unwrap_or(80);
+                                        let max_cell_length = if parsed.columns.len() == 1 {
+                                            context.args.max_cell_length * 5
+                                        } else {
+                                            context.args.max_cell_length
+                                        };
+                                        if context.is_tui() {
+                                            emit_table_tui(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
+                                        } else {
+                                            let table_output = render_table_output(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
+                                            out!(context, "{}", table_output);
+                                        }
+                                        context.last_stats = compute_stats(context.args.concise, &parsed.statistics);
+                                    }
+                                }
+                                Err(e) => {
+                                    if context.args.verbose {
+                                        out_err!(context, "Failed to parse table format: {}", e);
+                                    }
+                                    context.emit_raw(&body);
+                                }
+                            }
+                        } else {
+                            context.emit_raw(&body);
+                        }
+
+                        if !status.is_success() {
+                            query_failed = true;
+                        }
                     }
                 }
                 Err(error) => {
                     if context.args.verbose {
-                        eprintln!("Failed to send the request: {:?}", error);
+                        out_err!(context, "Failed to send the request: {:?}", error);
                     } else {
-                        eprintln!("Failed to send the request: {}", error.to_string());
+                        out_err!(context, "Failed to send the request: {}", error.to_string());
                     }
                     query_failed = true;
                 },
@@ -435,15 +584,16 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
             if !context.args.concise {
                 let elapsed = format!("{:?}", elapsed / 100000 * 100000);
-                eprintln!("Time: {elapsed}");
-                // Print statistics if available (from client-side rendering)
+                out_err!(context, "Time: {elapsed}");
                 if let Some(stats) = &context.last_stats {
-                    eprintln!("{}", stats);
+                    out_err!(context, "{}", stats);
                 }
                 if let Some(request_id) = maybe_request_id {
-                    eprintln!("Request Id: {request_id}");
+                    if !context.is_tui() {
+                        out_err!(context, "Request Id: {request_id}");
+                    }
                 }
-                eprintln!()
+                context.emit_newline();
             }
         }
     };
