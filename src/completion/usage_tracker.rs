@@ -6,6 +6,7 @@ pub enum ItemType {
     Table,
     Column,
     Function,
+    Schema,
 }
 
 /// Tracks usage frequency of tables, columns, and functions to enable intelligent prioritization
@@ -78,6 +79,7 @@ impl UsageTracker {
                 let counts = self.function_counts.read().unwrap();
                 counts.get(name).copied().unwrap_or(0)
             }
+            ItemType::Schema => 0,
         }
     }
 

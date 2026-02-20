@@ -91,7 +91,6 @@ impl SqlCompleter {
                     name: qualified_name,
                     item_type: ItemType::Table,
                     score,
-                    table_name: None,
                 });
             }
         } else {
@@ -115,9 +114,8 @@ impl SqlCompleter {
 
                     scored.push(ScoredSuggestion {
                         name: schema_with_dot,
-                        item_type: ItemType::Table,
+                        item_type: ItemType::Schema,
                         score,
-                        table_name: None,
                     });
                 }
             }
@@ -133,7 +131,6 @@ impl SqlCompleter {
                         name: short_name.clone(),
                         item_type: ItemType::Table,
                         score,
-                        table_name: None,
                     });
                 }
 
@@ -144,7 +141,6 @@ impl SqlCompleter {
                         name: qualified_name,
                         item_type: ItemType::Table,
                         score,
-                        table_name: None,
                     });
                 }
             }
@@ -167,7 +163,6 @@ impl SqlCompleter {
                         name: short_name.clone(),
                         item_type: ItemType::Column,
                         score,
-                        table_name: table.clone(),
                     });
                 }
 
@@ -180,7 +175,6 @@ impl SqlCompleter {
                             name: qualified_name,
                             item_type: ItemType::Column,
                             score: score.saturating_sub(1),
-                            table_name: Some(tbl),
                         });
                     }
                 }
@@ -197,9 +191,8 @@ impl SqlCompleter {
 
                     scored.push(ScoredSuggestion {
                         name: function_with_paren,
-                        item_type: ItemType::Column,
+                        item_type: ItemType::Function,
                         score,
-                        table_name: None,
                     });
                 }
             }
@@ -215,13 +208,12 @@ impl SqlCompleter {
             .filter(|s| seen.insert(s.name.clone()))
             .map(|s| {
                 let description = match s.item_type {
-                    ItemType::Table => "table".to_string(),
-                    ItemType::Column => match s.table_name {
-                        Some(t) => t,
-                        None => "column".to_string(),
-                    },
-                    ItemType::Function => "func".to_string(),
-                };
+                    ItemType::Table => "table",
+                    ItemType::Column => "column",
+                    ItemType::Function => "function",
+                    ItemType::Schema => "schema",
+                }
+                .to_string();
                 CompletionItem {
                     value: s.name,
                     description,

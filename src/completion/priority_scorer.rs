@@ -13,8 +13,6 @@ pub struct ScoredSuggestion {
     pub name: String,
     pub item_type: ItemType,
     pub score: u32,
-    /// For column items: the table the column belongs to (short name, no schema prefix).
-    pub table_name: Option<String>,
 }
 
 /// Priority classes determine the base score before usage bonuses
@@ -92,7 +90,7 @@ impl PriorityScorer {
         }
 
         match item_type {
-            ItemType::Table => PriorityClass::Table,
+            ItemType::Table | ItemType::Schema => PriorityClass::Table,
 
             ItemType::Column => {
                 // Check if column belongs to a table in the statement
