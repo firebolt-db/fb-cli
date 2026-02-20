@@ -256,6 +256,40 @@ impl SchemaCache {
         None
     }
 
+    /// Return ALL (schema, table) pairs — used by the fuzzy completer.
+    pub fn get_all_tables(&self) -> Vec<(String, String)> {
+        let tables = self.tables.read().unwrap();
+        let mut result: Vec<(String, String)> = tables
+            .values()
+            .map(|t| (t.schema_name.clone(), t.table_name.clone()))
+            .collect();
+        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result
+    }
+
+    /// Return ALL (table, column) pairs — used by the fuzzy completer.
+    pub fn get_all_columns(&self) -> Vec<(String, String)> {
+        let tables = self.tables.read().unwrap();
+        let mut result: Vec<(String, String)> = tables
+            .values()
+            .flat_map(|t| {
+                t.columns
+                    .iter()
+                    .map(|c| (t.table_name.clone(), c.name.clone()))
+            })
+            .collect();
+        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result
+    }
+
+    /// Return ALL function names — used by the fuzzy completer.
+    pub fn get_all_functions(&self) -> Vec<String> {
+        let fns = self.functions.read().unwrap();
+        let mut result: Vec<String> = fns.iter().cloned().collect();
+        result.sort();
+        result
+    }
+
     /// Synchronous method to get completions from cache
     pub fn get_completions(
         &self,

@@ -1,5 +1,6 @@
 pub mod context_analyzer;
 pub mod context_detector;
+pub mod fuzzy_completer;
 pub mod priority_scorer;
 pub mod schema_cache;
 pub mod usage_tracker;

@@ -1,4 +1,5 @@
 pub mod completion_popup;
+pub mod fuzzy_popup;
 pub mod history;
 pub mod history_search;
 pub mod layout;
@@ -29,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tui_textarea::{CursorMove, Input, TextArea};
 
+use crate::completion::fuzzy_completer::FuzzyCompleter;
 use crate::completion::schema_cache::SchemaCache;
 use crate::completion::usage_tracker::UsageTracker;
 use crate::completion::SqlCompleter;
@@ -40,6 +42,7 @@ use crate::viewer::open_csvlens_viewer;
 use crate::CLI_VERSION;
 
 use completion_popup::CompletionState;
+use fuzzy_popup::FuzzyState;
 use history::History;
 use history_search::HistorySearch;
 use layout::compute_layout;
@@ -88,6 +91,7 @@ pub struct TuiApp {
     history: History,
     schema_cache: Arc<SchemaCache>,
     completer: SqlCompleter,
+    fuzzy_completer: FuzzyCompleter,
     highlighter: SqlHighlighter,
 
     // Query execution state
@@ -101,6 +105,9 @@ pub struct TuiApp {
 
     /// Active tab-completion popup session; `None` when the popup is closed.
     completion_state: Option<CompletionState>,
+
+    /// Active Ctrl+Space fuzzy search session; `None` when closed.
+    fuzzy_state: Option<FuzzyState>,
 
     /// Active Ctrl+R reverse-search session; `None` when not searching.
     history_search: Option<HistorySearch>,
@@ -128,6 +135,7 @@ impl TuiApp {
         let highlighter = SqlHighlighter::new(!context.args.no_completion).unwrap_or_else(|_| {
             SqlHighlighter::new(false).unwrap()
         });
+        let fuzzy_completer = FuzzyCompleter::new(schema_cache.clone());
 
         Self {
             context,
@@ -136,6 +144,7 @@ impl TuiApp {
             history,
             schema_cache,
             completer,
+            fuzzy_completer,
             highlighter,
             query_rx: None,
             cancel_token: None,
@@ -145,6 +154,7 @@ impl TuiApp {
             running_hint: String::new(),
             progress_rows: 0,
             completion_state: None,
+            fuzzy_state: None,
             history_search: None,
             needs_clear: false,
             should_quit: false,
@@ -305,6 +315,11 @@ impl TuiApp {
             return self.handle_completion_key(key).await;
         }
 
+        // ── Fuzzy search overlay ──────────────────────────────────────────────
+        if self.fuzzy_state.is_some() {
+            return self.handle_fuzzy_key(key).await;
+        }
+
         match (key.code, key.modifiers) {
             // ── Exit ──────────────────────────────────────────────────────
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -329,6 +344,11 @@ impl TuiApp {
             // ── Ctrl+V: open csvlens ──────────────────────────────────────
             (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.open_viewer();
+            }
+
+            // ── Ctrl+Space: open fuzzy schema search ─────────────────────
+            (KeyCode::Char(' '), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.open_fuzzy_search();
             }
 
             // ── Tab: trigger / navigate completion ───────────────────────
@@ -603,6 +623,79 @@ impl TuiApp {
             // Any other key: close popup and re-dispatch normally
             _ => {
                 self.completion_state = None;
+                return Box::pin(self.handle_key(key)).await;
+            }
+        }
+        false
+    }
+
+    // ── Fuzzy search ─────────────────────────────────────────────────────────
+
+    fn open_fuzzy_search(&mut self) {
+        let mut state = FuzzyState::new();
+        state.items = self.fuzzy_completer.search("", 100);
+        self.fuzzy_state = Some(state);
+    }
+
+    /// Key handler for the fuzzy popup. Returns true if app should quit.
+    async fn handle_fuzzy_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            // Escape or Ctrl+Space: close
+            (KeyCode::Esc, _)
+            | (KeyCode::Char(' '), crossterm::event::KeyModifiers::CONTROL) => {
+                self.fuzzy_state = None;
+            }
+
+            // Enter: accept selected item
+            (KeyCode::Enter, _) => {
+                if let Some(fs) = &self.fuzzy_state {
+                    if let Some(item) = fs.selected_item() {
+                        let value = item.insert_value.clone();
+                        self.fuzzy_state = None;
+                        self.textarea.insert_str(&value);
+                    } else {
+                        self.fuzzy_state = None;
+                    }
+                }
+            }
+
+            // Down / Tab: next item
+            (KeyCode::Down, _) | (KeyCode::Tab, _) => {
+                if let Some(fs) = &mut self.fuzzy_state {
+                    fs.next();
+                }
+            }
+
+            // Up / Shift+Tab: previous item
+            (KeyCode::Up, _) | (KeyCode::BackTab, _) => {
+                if let Some(fs) = &mut self.fuzzy_state {
+                    fs.prev();
+                }
+            }
+
+            // Backspace: delete last char from query and re-search
+            (KeyCode::Backspace, _) => {
+                if let Some(fs) = &mut self.fuzzy_state {
+                    fs.pop_char();
+                    let q = fs.query.clone();
+                    let items = self.fuzzy_completer.search(&q, 100);
+                    self.fuzzy_state.as_mut().unwrap().items = items;
+                }
+            }
+
+            // Printable char: append to query and re-search
+            (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
+                if let Some(fs) = &mut self.fuzzy_state {
+                    fs.push_char(c);
+                    let q = fs.query.clone();
+                    let items = self.fuzzy_completer.search(&q, 100);
+                    self.fuzzy_state.as_mut().unwrap().items = items;
+                }
+            }
+
+            // Any other key: close and re-dispatch
+            _ => {
+                self.fuzzy_state = None;
                 return Box::pin(self.handle_key(key)).await;
             }
         }
@@ -1047,6 +1140,14 @@ impl TuiApp {
             }
         }
 
+        // Fuzzy search overlay (rendered on top of everything)
+        if let Some(fs) = &self.fuzzy_state {
+            let fuzzy_rect = fuzzy_popup::popup_area(layout.input, area);
+            if fuzzy_rect.height > 2 {
+                fuzzy_popup::render(fs, fuzzy_rect, f);
+            }
+        }
+
         // Status bar
         self.render_status_bar(f, layout.status);
     }
@@ -1181,8 +1282,12 @@ impl TuiApp {
             " Ctrl+C cancel ".to_string()
         } else if self.history_search.is_some() {
             " Enter accept  Ctrl+R older  Esc cancel ".to_string()
+        } else if self.fuzzy_state.is_some() {
+            " Enter accept  ↑/↓ navigate  Esc close ".to_string()
+        } else if self.completion_state.is_some() {
+            " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+D exit  Ctrl+R search  Ctrl+H help ".to_string()
+            " Ctrl+D exit  Ctrl+Space fuzzy  Tab complete ".to_string()
         };
 
         // Pad between left and right
