@@ -612,6 +612,13 @@ impl TuiApp {
     // ── Backslash commands ───────────────────────────────────────────────────
 
     async fn handle_backslash_command(&mut self, cmd: &str) {
+        // Dispatch \export: write last result to a file
+        if cmd.starts_with("\\export") {
+            self.history.add(cmd.to_string());
+            self.do_export(cmd);
+            return;
+        }
+
         // Dispatch \benchmark separately since it needs async query execution
         if cmd.starts_with("\\benchmark") {
             self.history.add(cmd.to_string());
@@ -633,6 +640,123 @@ impl TuiApp {
                     Err(e) => self.output.push_line(format!("Error: {}", e)),
                 }
                 self.history.add(cmd.to_string());
+            }
+        }
+    }
+
+    // ── Export ───────────────────────────────────────────────────────────────
+
+    /// Handle `\export <file> [format]` — write the last query result to a file.
+    /// Supported formats: csv (default), tsv, json, jsonlines.
+    fn do_export(&mut self, cmd: &str) {
+        // Parse: \export <path> [format]
+        let rest = cmd.strip_prefix("\\export").unwrap_or("").trim();
+        if rest.is_empty() {
+            self.output.push_line("Usage: \\export <file> [csv|tsv|json|jsonlines]");
+            return;
+        }
+
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let path_str = parts.next().unwrap_or("").trim().to_string();
+        let format = parts
+            .next()
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_else(|| "csv".to_string());
+
+        let result = match &self.context.last_result {
+            Some(r) => r.clone(),
+            None => {
+                self.output
+                    .push_line("No query results to export. Run a query first.");
+                return;
+            }
+        };
+
+        use crate::table_renderer::write_result_as_csv;
+        use std::fs::File;
+        use std::io::{BufWriter, Write};
+
+        let file = match File::create(&path_str) {
+            Ok(f) => f,
+            Err(e) => {
+                self.output
+                    .push_line(format!("Error: could not create file '{}': {}", path_str, e));
+                return;
+            }
+        };
+        let mut writer = BufWriter::new(file);
+
+        // Helper: format a JSON value as a plain string for TSV output
+        fn val_to_str(v: &serde_json::Value) -> String {
+            match v {
+                serde_json::Value::Null => String::new(),
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }
+        }
+
+        let write_result = match format.as_str() {
+            "tsv" => {
+                // Tab-separated with header
+                let header: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+                let _ = writeln!(writer, "{}", header.join("\t"));
+                for row in &result.rows {
+                    let values: Vec<String> = row.iter().map(val_to_str).collect();
+                    let _ = writeln!(writer, "{}", values.join("\t"));
+                }
+                writer.flush()
+            }
+            "json" => {
+                // JSON array of objects
+                let rows_json: Vec<serde_json::Value> = result
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        let obj: serde_json::Map<String, serde_json::Value> = result
+                            .columns
+                            .iter()
+                            .zip(row.iter())
+                            .map(|(col, val)| (col.name.clone(), val.clone()))
+                            .collect();
+                        serde_json::Value::Object(obj)
+                    })
+                    .collect();
+                let _ = writeln!(writer, "{}", serde_json::to_string_pretty(&rows_json).unwrap_or_default());
+                writer.flush()
+            }
+            "jsonlines" | "jsonl" | "ndjson" => {
+                // One JSON object per line
+                for row in &result.rows {
+                    let obj: serde_json::Map<String, serde_json::Value> = result
+                        .columns
+                        .iter()
+                        .zip(row.iter())
+                        .map(|(col, val)| (col.name.clone(), val.clone()))
+                        .collect();
+                    let _ = writeln!(writer, "{}", serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default());
+                }
+                writer.flush()
+            }
+            _ => {
+                // Default: CSV
+                write_result_as_csv(&mut writer, &result.columns, &result.rows).map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                })
+            }
+        };
+
+        match write_result {
+            Ok(()) => {
+                self.output.push_line(format!(
+                    "Exported {} rows to '{}' ({} format)",
+                    result.rows.len(),
+                    path_str,
+                    format
+                ));
+            }
+            Err(e) => {
+                self.output
+                    .push_line(format!("Error writing to '{}': {}", path_str, e));
             }
         }
     }
@@ -777,9 +901,11 @@ impl TuiApp {
     fn show_help(&mut self) {
         self.output.push_ansi_text(
             "Special commands:\n\
-             \\view           - Open last query result in csvlens viewer\n\
-             \\refresh        - Manually refresh schema cache\n\
-             \\help           - Show this help message\n\
+             \\view                       - Open last query result in csvlens viewer\n\
+             \\refresh                    - Manually refresh schema cache\n\
+             \\benchmark [N] <query>      - Run query N+1 times (1 warmup), show timing stats\n\
+             \\export <file> [fmt]        - Export last result to file (csv/tsv/json/jsonlines)\n\
+             \\help                       - Show this help message\n\
              \n\
              SQL-style commands:\n\
              set format = <value>;       - Change output format\n\
@@ -787,12 +913,15 @@ impl TuiApp {
              set completion = on/off;    - Enable/disable auto-completion\n\
              \n\
              Keyboard shortcuts:\n\
+             Tab             - Open / navigate completion popup\n\
+             Shift+Tab       - Navigate completion popup backwards\n\
+             Ctrl+R          - Reverse history search\n\
              Ctrl+V          - Open csvlens viewer for last result\n\
              Ctrl+D          - Exit\n\
              Ctrl+C          - Cancel current input (or running query)\n\
              Ctrl+Up/Down    - Cycle history\n\
              Page Up/Down    - Scroll output pane\n\
-             Enter           - Submit query (when complete) or insert newline",
+             Shift+Enter     - Insert newline without submitting",
         );
     }
 
