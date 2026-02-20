@@ -68,7 +68,7 @@ impl CompletionState {
 // ── Layout helpers ───────────────────────────────────────────────────────────
 
 const MAX_VISIBLE: u16 = 10;
-const DESCRIPTION_WIDTH: u16 = 8; // " table  " / " column " / " function"
+const DESCRIPTION_WIDTH: u16 = 16; // " table" / " orders" / " func"
 const MIN_VALUE_WIDTH: u16 = 16;
 const BORDER_OVERHEAD: u16 = 2; // left + right border
 
