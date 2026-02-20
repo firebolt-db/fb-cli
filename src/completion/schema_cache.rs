@@ -267,18 +267,20 @@ impl SchemaCache {
         result
     }
 
-    /// Return ALL (table, column) pairs — used by the fuzzy completer.
-    pub fn get_all_columns(&self) -> Vec<(String, String)> {
+    /// Return ALL (schema, table, column) triples — used by the fuzzy completer.
+    pub fn get_all_columns(&self) -> Vec<(String, String, String)> {
         let tables = self.tables.read().unwrap();
-        let mut result: Vec<(String, String)> = tables
+        let mut result: Vec<(String, String, String)> = tables
             .values()
             .flat_map(|t| {
+                let schema = t.schema_name.clone();
+                let table = t.table_name.clone();
                 t.columns
                     .iter()
-                    .map(|c| (t.table_name.clone(), c.name.clone()))
+                    .map(move |c| (schema.clone(), table.clone(), c.name.clone()))
             })
             .collect();
-        result.sort_by(|a, b| a.1.cmp(&b.1));
+        result.sort_by(|a, b| a.2.cmp(&b.2));
         result
     }
 
