@@ -22,6 +22,8 @@ pub struct FuzzyState {
     pub items: Vec<FuzzyItem>,
     /// Currently highlighted item index.
     pub selected: usize,
+    /// Index of the first visible item (scroll position).
+    pub scroll_offset: usize,
 }
 
 impl FuzzyState {
@@ -30,33 +32,48 @@ impl FuzzyState {
             query: String::new(),
             items: Vec::new(),
             selected: 0,
+            scroll_offset: 0,
         }
     }
 
     pub fn push_char(&mut self, c: char) {
         self.query.push(c);
         self.selected = 0;
+        self.scroll_offset = 0;
     }
 
     pub fn pop_char(&mut self) {
         self.query.pop();
         self.selected = 0;
+        self.scroll_offset = 0;
     }
 
     pub fn next(&mut self) {
         if !self.items.is_empty() {
             self.selected = (self.selected + 1) % self.items.len();
+            self.ensure_visible();
         }
     }
 
     pub fn prev(&mut self) {
         if !self.items.is_empty() {
             self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+            self.ensure_visible();
         }
     }
 
     pub fn selected_item(&self) -> Option<&FuzzyItem> {
         self.items.get(self.selected)
+    }
+
+    /// Adjust scroll_offset so that `selected` is within the visible window.
+    fn ensure_visible(&mut self) {
+        let vis = MAX_VISIBLE as usize;
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + vis {
+            self.scroll_offset = self.selected - vis + 1;
+        }
     }
 }
 
@@ -102,6 +119,8 @@ pub fn render(state: &FuzzyState, area: Rect, f: &mut ratatui::Frame) {
         .items
         .iter()
         .enumerate()
+        .skip(state.scroll_offset)
+        .take(chunks[1].height as usize)
         .map(|(idx, item)| {
             let is_sel = idx == state.selected;
 

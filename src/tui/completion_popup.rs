@@ -17,6 +17,8 @@ pub struct CompletionState {
     pub items: Vec<CompletionItem>,
     /// Index of the currently highlighted item.
     pub selected: usize,
+    /// Index of the first visible item (scroll position).
+    pub scroll_offset: usize,
     /// Byte offset in the full textarea content where the partial word starts.
     pub word_start_byte: usize,
     /// Visual column (0-based) of the word start within its line.
@@ -36,6 +38,7 @@ impl CompletionState {
         Self {
             items,
             selected: 0,
+            scroll_offset: 0,
             word_start_byte,
             word_start_col,
             cursor_row,
@@ -50,17 +53,29 @@ impl CompletionState {
         self.items.get(self.selected)
     }
 
-    /// Advance selection to the next item (wrapping).
+    /// Advance selection to the next item (wrapping), scrolling the viewport.
     pub fn next(&mut self) {
         if !self.items.is_empty() {
             self.selected = (self.selected + 1) % self.items.len();
+            self.ensure_visible();
         }
     }
 
-    /// Move selection to the previous item (wrapping).
+    /// Move selection to the previous item (wrapping), scrolling the viewport.
     pub fn prev(&mut self) {
         if !self.items.is_empty() {
             self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+            self.ensure_visible();
+        }
+    }
+
+    /// Adjust scroll_offset so that `selected` is within the visible window.
+    fn ensure_visible(&mut self) {
+        let vis = MAX_VISIBLE as usize;
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + vis {
+            self.scroll_offset = self.selected - vis + 1;
         }
     }
 }
@@ -126,11 +141,13 @@ pub fn render(state: &CompletionState, area: Rect, f: &mut ratatui::Frame) {
     let inner = block.inner(area);
     let value_width = inner.width.saturating_sub(DESCRIPTION_WIDTH) as usize;
 
-    // Build list items
+    // Build list items — only the visible window starting at scroll_offset
     let items: Vec<ListItem> = state
         .items
         .iter()
         .enumerate()
+        .skip(state.scroll_offset)
+        .take(inner.height as usize)
         .map(|(idx, item)| {
             let is_selected = idx == state.selected;
 
