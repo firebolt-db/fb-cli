@@ -119,6 +119,10 @@ pub struct TuiApp {
 
     /// Temporary message shown in the status bar, with the time it was set.
     flash_message: Option<(String, Instant)>,
+
+    /// When true, open the csvlens viewer at the top of the next event-loop tick
+    /// (outside any event-handler so crossterm's global reader is fully idle).
+    pending_viewer: bool,
 }
 
 impl TuiApp {
@@ -163,6 +167,7 @@ impl TuiApp {
             should_quit: false,
             has_error: false,
             flash_message: None,
+            pending_viewer: false,
         }
     }
 
@@ -212,6 +217,13 @@ impl TuiApp {
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         loop {
+            // ── Launch csvlens here, before event::poll, so crossterm's global
+            //    reader is fully idle (not inside any event handler).
+            if self.pending_viewer {
+                self.pending_viewer = false;
+                self.run_viewer(terminal);
+            }
+
             self.drain_query_output();
 
             if self.is_running {
@@ -961,20 +973,24 @@ impl TuiApp {
         ));
     }
 
+    /// Called from handle_key: validates that data is available, then queues
+    /// the viewer to open at the top of the next event-loop iteration.
     fn open_viewer(&mut self) {
         if self.context.last_result.is_none() {
             self.set_flash("No results to display — run a query first");
             return;
         }
-
-        // In TUI mode the viewer always has parsed data available, so bypass the
-        // format guard in open_csvlens_viewer by temporarily setting client:auto.
-        let saved_format = self.context.args.format.clone();
         if !self.context.args.format.starts_with("client:") {
-            self.context.args.format = "client:auto".to_string();
+            self.set_flash("Viewer requires client format — run: set format = client:auto;");
+            return;
         }
+        self.pending_viewer = true;
+    }
 
-        // Suspend the TUI and hand the terminal to csvlens.
+    /// Actually launches csvlens. Called at the top of event_loop, outside any
+    /// event-handler, so crossterm's global InternalEventReader is fully idle.
+    fn run_viewer(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
+        // Suspend the TUI: hand the terminal back to the normal screen.
         let _ = disable_raw_mode();
         let _ = execute!(
             std::io::stdout(),
@@ -982,9 +998,12 @@ impl TuiApp {
             DisableMouseCapture,
             PopKeyboardEnhancementFlags
         );
+        // Flush so all escape sequences are sent before csvlens takes over.
+        let _ = std::io::Write::flush(&mut std::io::stdout());
 
         let result = open_csvlens_viewer(&self.context);
 
+        // Restore the TUI.
         let _ = execute!(
             std::io::stdout(),
             EnterAlternateScreen,
@@ -992,9 +1011,9 @@ impl TuiApp {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let _ = enable_raw_mode();
-
-        self.context.args.format = saved_format;
-        self.needs_clear = true;
+        // Force a full redraw so ratatui's internal buffer matches reality.
+        let _ = terminal.clear();
+        self.needs_clear = false; // clear() already handled it
 
         if let Err(e) = result {
             self.set_flash(format!("Viewer error: {}", e));
