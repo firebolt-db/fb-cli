@@ -176,7 +176,12 @@ impl TuiApp {
     }
 
     fn make_textarea() -> TextArea<'static> {
-        TextArea::default()
+        let mut ta = TextArea::default();
+        // Disable the current-line underline — terminal underlines inherit the
+        // foreground colour, which would make syntax-highlighted lines look
+        // inconsistent (each token segment would draw its underline in a
+        // different colour).
+        ta
     }
 
     // ── Public entry point ───────────────────────────────────────────────────
@@ -912,7 +917,7 @@ impl TuiApp {
             n_runs,
             if n_runs == 1 { "" } else { "s" }
         ));
-        self.output.push_prompt(format!("❯ {}", query_text.trim()));
+        self.push_sql_echo(query_text.trim());
 
         let mut times_ms: Vec<f64> = Vec::with_capacity(n_runs);
 
@@ -1086,15 +1091,35 @@ impl TuiApp {
 
     // ── Query execution ──────────────────────────────────────────────────────
 
-    async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
-        // Echo query to output pane with ❯ prompt, one visual line per SQL line
-        let mut lines = original_text.trim().lines();
-        if let Some(first) = lines.next() {
-            self.output.push_prompt(format!("❯ {}", first));
-            for line in lines {
-                self.output.push_prompt(format!("  {}", line));
-            }
+    /// Echo SQL text to the output pane with the same syntax highlighting as the input pane.
+    /// The first line gets the `❯ ` prefix (green+bold); continuation lines get `  `.
+    fn push_sql_echo(&mut self, sql: &str) {
+        let all_spans = self.highlighter.highlight_to_spans(sql);
+        let mut byte_offset = 0usize;
+        let mut first_line = true;
+        for line_text in sql.lines() {
+            let line_start = byte_offset;
+            let line_end = byte_offset + line_text.len();
+            // Collect spans for this line, clipped and re-offset to line-local coords
+            let line_spans: Vec<(std::ops::Range<usize>, ratatui::style::Style)> = all_spans
+                .iter()
+                .filter(|(r, _)| r.start < line_end && r.end > line_start)
+                .map(|(r, style)| {
+                    let s = r.start.saturating_sub(line_start);
+                    let e = (r.end - line_start).min(line_text.len());
+                    (s..e, *style)
+                })
+                .collect();
+            let prefix = if first_line { "❯ " } else { "  " };
+            self.output.push_prompt_highlighted(prefix, line_text, &line_spans);
+            first_line = false;
+            byte_offset += line_text.len() + 1; // +1 for '\n'
         }
+    }
+
+    async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
+        // Echo query to output pane with syntax highlighting
+        self.push_sql_echo(original_text.trim());
 
         let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
         let cancel_token = CancellationToken::new();
@@ -1133,11 +1158,12 @@ impl TuiApp {
 
     fn set_textarea_content(&mut self, content: &str) {
         let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-        self.textarea = TextArea::new(if lines.is_empty() {
+        let mut ta = TextArea::new(if lines.is_empty() {
             vec![String::new()]
         } else {
             lines
         });
+        self.textarea = ta;
         // Move cursor to end of content
         self.textarea.move_cursor(CursorMove::Bottom);
         self.textarea.move_cursor(CursorMove::End);
@@ -1147,6 +1173,15 @@ impl TuiApp {
 
     fn render(&mut self, f: &mut ratatui::Frame) {
         let area = f.area();
+
+        // Only highlight the current line when there are multiple lines — on a
+        // single-line textarea the highlight adds noise with no benefit.
+        let cursor_line_bg = if self.textarea.lines().len() > 1 {
+            ratatui::style::Style::default().bg(ratatui::style::Color::Indexed(234))
+        } else {
+            ratatui::style::Style::default()
+        };
+        self.textarea.set_cursor_line_style(cursor_line_bg);
 
         let input_height = if self.is_running {
             // Running pane: spinner row + hint row + top/bottom borders = 4

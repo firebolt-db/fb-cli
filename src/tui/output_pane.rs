@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use std::ops::Range;
 
 // ── OutputLine ────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,47 @@ impl OutputPane {
             Line::from(Span::styled(s, Style::default().fg(Color::Yellow)))
         };
         self.lines.push(OutputLine::from_line(ratatui_line));
+        self.scroll_to_bottom();
+    }
+
+    /// Push the echoed prompt line with syntax highlighting.
+    ///
+    /// `prefix` is `"❯ "` for the first line or `"  "` for continuation lines.
+    /// `sql_line` is the raw text of one SQL line.
+    /// `spans` are pre-computed highlight spans whose byte offsets are relative to `sql_line`.
+    pub fn push_prompt_highlighted(
+        &mut self,
+        prefix: &str,
+        sql_line: &str,
+        spans: &[(Range<usize>, Style)],
+    ) {
+        let prefix_span: Span<'static> = if prefix == "❯ " {
+            Span::styled(
+                "❯ ".to_string(),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw(prefix.to_string())
+        };
+
+        let mut parts: Vec<Span<'static>> = vec![prefix_span];
+        let mut last = 0usize;
+        for (range, style) in spans {
+            let start = range.start.min(sql_line.len());
+            let end = range.end.min(sql_line.len());
+            if start > last {
+                parts.push(Span::raw(sql_line[last..start].to_string()));
+            }
+            if start < end {
+                parts.push(Span::styled(sql_line[start..end].to_string(), *style));
+            }
+            last = end;
+        }
+        if last < sql_line.len() {
+            parts.push(Span::raw(sql_line[last..].to_string()));
+        }
+
+        self.lines.push(OutputLine::from_line(Line::from(parts)));
         self.scroll_to_bottom();
     }
 

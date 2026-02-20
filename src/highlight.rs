@@ -28,23 +28,22 @@ impl ColorScheme {
     }
 }
 
-/// Ratatui styles for TUI syntax highlighting
+/// Ratatui styles for TUI syntax highlighting — mirrors the ANSI escape codes used in
+/// headless mode so the TUI and terminal output look identical.
 fn keyword_style() -> Style {
-    Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(Color::LightBlue) // \x1b[94m Bright Blue
 }
 fn function_style() -> Style {
-    Style::default().fg(Color::Blue)
+    Style::default().fg(Color::LightCyan) // \x1b[96m Bright Cyan
 }
 fn string_style() -> Style {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(Color::LightYellow) // \x1b[93m Bright Yellow
 }
 fn number_style() -> Style {
-    Style::default().fg(Color::Magenta)
+    Style::default().fg(Color::LightMagenta) // \x1b[95m Bright Magenta
 }
 fn comment_style() -> Style {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(Color::DarkGray) // \x1b[90m Dark Gray
 }
 
 // SQL Keywords pattern
