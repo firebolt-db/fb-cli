@@ -158,7 +158,13 @@ impl SqlCompleter {
                 let short_name = table.clone();
                 let qualified_name = format!("{}.{}", schema, table);
 
-                let score = self.scorer.score(&short_name, ItemType::Table, &tables_in_line, None);
+                let base_score = self.scorer.score(&short_name, ItemType::Table, &tables_in_line, None);
+                // Public-schema tables rank 500 points above other non-system schemas.
+                let score = if schema == "public" || schema.is_empty() {
+                    base_score + 500
+                } else {
+                    base_score
+                };
 
                 if short_name.to_lowercase().starts_with(&partial_lower) {
                     scored.push(ScoredSuggestion {
