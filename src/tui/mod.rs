@@ -103,6 +103,9 @@ pub struct TuiApp {
     spinner_tick: u64,
     running_hint: String, // e.g. "Showing first N rows — collecting remainder..."
     progress_rows: u64,   // rows received so far (streamed from query task)
+    /// Set when the current query returns a result with zero columns (DDL indicator).
+    /// Triggers an async schema-cache refresh on successful completion.
+    pending_schema_refresh: bool,
 
     /// Active tab-completion popup session; `None` when the popup is closed.
     completion_state: Option<CompletionState>,
@@ -164,6 +167,7 @@ impl TuiApp {
             spinner_tick: 0,
             running_hint: String::new(),
             progress_rows: 0,
+            pending_schema_refresh: false,
             completion_state: None,
             fuzzy_state: None,
             history_search: None,
@@ -287,6 +291,9 @@ impl TuiApp {
                     self.progress_rows = n;
                 }
                 Ok(TuiMsg::ParsedResult(result)) => {
+                    if result.columns.is_empty() {
+                        self.pending_schema_refresh = true;
+                    }
                     self.context.last_result = Some(result);
                 }
                 Ok(TuiMsg::StyledLines(lines)) => {
@@ -313,6 +320,20 @@ impl TuiApp {
                     self.running_hint.clear();
                     self.cancel_token = None;
                     self.query_rx = None;
+
+                    // A zero-column result signals likely DDL — refresh the
+                    // schema cache so new/dropped tables appear in completion.
+                    // The flag is only set on success (ParsedResult is only
+                    // emitted when the query completed without errors).
+                    if self.pending_schema_refresh && !self.context.args.no_completion {
+                        self.pending_schema_refresh = false;
+                        let cache = self.schema_cache.clone();
+                        let mut ctx_clone = self.context.clone();
+                        tokio::spawn(async move {
+                            let _ = cache.refresh(&mut ctx_clone).await;
+                        });
+                    }
+
                     break;
                 }
             }
@@ -365,7 +386,6 @@ impl TuiApp {
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.completion_state = None;
                 self.reset_textarea();
-                self.output.push_line("^C");
                 self.history.reset_navigation();
             }
 
@@ -1131,6 +1151,7 @@ impl TuiApp {
         self.running_hint.clear();
         self.progress_rows = 0;
         self.query_start = Some(Instant::now());
+        self.pending_schema_refresh = false;
 
         // Build a context clone with the TUI output channel attached
         let mut ctx = self.context.clone();

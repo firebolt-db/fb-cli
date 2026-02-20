@@ -504,22 +504,26 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                 out_err!(context, "Error: {}", err.description);
                             }
                             query_failed = true;
-                        } else if !columns.is_empty() {
-                            if !display_emitted {
-                                // All rows fit within limits — emit now
-                                let max_cell = if columns.len() == 1 { context.args.max_cell_length * 5 } else { context.args.max_cell_length };
-                                if context.is_tui() {
-                                    emit_table_tui(context, &columns, &all_rows, terminal_width, max_cell);
+                        } else {
+                            if !columns.is_empty() {
+                                if !display_emitted {
+                                    // All rows fit within limits — emit now
+                                    let max_cell = if columns.len() == 1 { context.args.max_cell_length * 5 } else { context.args.max_cell_length };
+                                    if context.is_tui() {
+                                        emit_table_tui(context, &columns, &all_rows, terminal_width, max_cell);
+                                    } else {
+                                        let rendered = render_table_output(context, &columns, &all_rows, terminal_width, max_cell);
+                                        out!(context, "{}", rendered);
+                                    }
                                 } else {
-                                    let rendered = render_table_output(context, &columns, &all_rows, terminal_width, max_cell);
-                                    out!(context, "{}", rendered);
+                                    // Partial display was already emitted; show the final total
+                                    out_err!(context, "Showing {} of {} rows (press Ctrl+V or \\view to see all).",
+                                        format_number(display_rows.len() as u64),
+                                        format_number(all_rows.len() as u64));
                                 }
-                            } else {
-                                // Partial display was already emitted; show the final total
-                                out_err!(context, "Showing {} of {} rows (press Ctrl+V or \\view to see all).",
-                                    format_number(display_rows.len() as u64),
-                                    format_number(all_rows.len() as u64));
                             }
+                            // Always emit ParsedResult on success so the TUI can detect
+                            // DDL statements (zero columns) and refresh the schema cache.
                             let parsed_result = ParsedResult {
                                 columns: columns.clone(),
                                 rows: all_rows,
