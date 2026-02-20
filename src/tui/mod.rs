@@ -990,30 +990,25 @@ impl TuiApp {
     /// Actually launches csvlens. Called at the top of event_loop, outside any
     /// event-handler, so crossterm's global InternalEventReader is fully idle.
     fn run_viewer(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
-        // Suspend the TUI: hand the terminal back to the normal screen.
+        // Mirror exactly what run() does on exit: tear down raw mode + alt screen
+        // through the ratatui backend's BufWriter so everything is flushed in order.
         let _ = disable_raw_mode();
-        let _ = execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            PopKeyboardEnhancementFlags
-        );
-        // Flush so all escape sequences are sent before csvlens takes over.
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+        let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = std::io::Write::flush(terminal.backend_mut());
 
         let result = open_csvlens_viewer(&self.context);
 
-        // Restore the TUI.
+        // Mirror exactly what run() does on entry: restore raw mode + alt screen.
+        let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
         let _ = execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
+            terminal.backend_mut(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let _ = enable_raw_mode();
-        // Force a full redraw so ratatui's internal buffer matches reality.
+        // Flush the backend and force ratatui to redraw everything from scratch.
+        let _ = std::io::Write::flush(terminal.backend_mut());
         let _ = terminal.clear();
-        self.needs_clear = false; // clear() already handled it
 
         if let Err(e) = result {
             self.set_flash(format!("Viewer error: {}", e));
