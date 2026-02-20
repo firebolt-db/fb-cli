@@ -146,35 +146,27 @@ impl SqlCompleter {
             }
 
             for (table, column) in column_metadata {
-                let short_name = column.clone();
-
-                let is_qualifying_table = partial.contains('.') &&
-                    table.as_ref().map_or(false, |t| partial.to_lowercase().starts_with(&format!("{}.", t.to_lowercase())));
-
-                let score = self.scorer.score(
-                    &short_name,
-                    ItemType::Column,
-                    &tables_in_line,
-                    table.as_deref(),
-                );
-
-                if !is_qualifying_table && short_name.to_lowercase().starts_with(&partial_lower) {
-                    scored.push(ScoredSuggestion {
-                        name: short_name.clone(),
-                        item_type: ItemType::Column,
-                        score,
-                    });
-                }
-
+                // Only emit qualified "table.column" candidates; bare column names are skipped.
                 if let Some(tbl) = table {
                     let qualified_name = format!("{}.{}", tbl, column);
+                    let qualified_lower = qualified_name.to_lowercase();
+                    let col_lower = column.to_lowercase();
 
-                    if qualified_name.to_lowercase().starts_with(&partial_lower) &&
-                       (tables_in_line.is_empty() || partial.contains('.')) {
+                    // Match when the user types just the column name prefix ("acco") OR
+                    // the qualified prefix ("orders.acc").
+                    if col_lower.starts_with(&partial_lower) || qualified_lower.starts_with(&partial_lower) {
+                        // Score with the qualified name so non-query-table columns rank as
+                        // QualifiedColumnOtherTable (3000) rather than Unqualified (2000).
+                        let score = self.scorer.score(
+                            &qualified_name,
+                            ItemType::Column,
+                            &tables_in_line,
+                            Some(&tbl),
+                        );
                         scored.push(ScoredSuggestion {
                             name: qualified_name,
                             item_type: ItemType::Column,
-                            score: score.saturating_sub(1),
+                            score,
                         });
                     }
                 }
