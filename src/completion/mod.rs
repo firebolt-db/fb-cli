@@ -81,17 +81,51 @@ impl SqlCompleter {
         };
 
         if let Some(schema_name) = schema_filter {
-            let tables_in_schema = self.cache.get_tables_in_schema(schema_name, table_prefix);
+            // If the part before the dot is a table referenced in the query, treat it as a
+            // table name and suggest its columns (e.g. "test." → "test.val").
+            let schema_lower = schema_name.to_lowercase();
+            let is_query_table = tables_in_line.iter().any(|t| {
+                let t_lower = t.to_lowercase();
+                t_lower == schema_lower
+                    || t_lower.ends_with(&format!(".{}", schema_lower))
+                    || schema_lower.ends_with(&format!(".{}", t_lower))
+            });
 
-            for table in tables_in_schema {
-                let qualified_name = format!("{}.{}", schema_name, table);
-                let score = self.scorer.score(&table, ItemType::Table, &tables_in_line, None);
-
-                scored.push(ScoredSuggestion {
-                    name: qualified_name,
-                    item_type: ItemType::Table,
-                    score,
-                });
+            if is_query_table {
+                let col_prefix_lower = table_prefix.to_lowercase();
+                let column_metadata = self.cache.get_columns_with_table(partial);
+                for (table, column) in column_metadata {
+                    if let Some(tbl) = table {
+                        if tbl.to_lowercase() == schema_lower
+                            && column.to_lowercase().starts_with(&col_prefix_lower)
+                        {
+                            let qualified_name = format!("{}.{}", tbl, column);
+                            let score = self.scorer.score(
+                                &qualified_name,
+                                ItemType::Column,
+                                &tables_in_line,
+                                Some(&tbl),
+                            );
+                            scored.push(ScoredSuggestion {
+                                name: qualified_name,
+                                item_type: ItemType::Column,
+                                score,
+                            });
+                        }
+                    }
+                }
+            } else {
+                // Part before the dot is a schema name — suggest tables within it.
+                let tables_in_schema = self.cache.get_tables_in_schema(schema_name, table_prefix);
+                for table in tables_in_schema {
+                    let qualified_name = format!("{}.{}", schema_name, table);
+                    let score = self.scorer.score(&table, ItemType::Table, &tables_in_line, None);
+                    scored.push(ScoredSuggestion {
+                        name: qualified_name,
+                        item_type: ItemType::Table,
+                        score,
+                    });
+                }
             }
         } else {
             let table_metadata = self.cache.get_tables_with_schema(partial);
