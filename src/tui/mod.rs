@@ -1288,7 +1288,7 @@ impl TuiApp {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
 
-        let left = format!(" {} | {} | v{}", host, db, CLI_VERSION);
+        let conn_info = format!(" {} | {} | v{}", host, db, CLI_VERSION);
 
         // Expire flash messages older than 2 seconds.
         if let Some((_, t)) = &self.flash_message {
@@ -1297,27 +1297,35 @@ impl TuiApp {
             }
         }
 
-        let (right, style) = if let Some((msg, _)) = &self.flash_message {
-            let right = format!(" {} ", msg);
-            (right, Style::default().bg(Color::Red).fg(Color::White))
-        } else if self.is_running {
-            (" Ctrl+C cancel ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
+        let right = if self.is_running {
+            " Ctrl+C cancel ".to_string()
         } else if self.history_search.is_some() {
-            (" Enter accept  Ctrl+R older  Esc cancel ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
+            " Enter accept  Ctrl+R older  Esc cancel ".to_string()
         } else if self.fuzzy_state.is_some() {
-            (" Enter accept  ↑/↓ navigate  Esc close ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
+            " Enter accept  ↑/↓ navigate  Esc close ".to_string()
         } else if self.completion_state.is_some() {
-            (" Enter accept  Tab/↑/↓ navigate  Esc close ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
+            " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            (" Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
+            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete ".to_string()
         };
 
-        // Pad between left and right
         let total = area.width as usize;
-        let pad = total.saturating_sub(left.len() + right.len());
-        let status_text = format!("{}{}{}", left, " ".repeat(pad), right);
 
-        let status = Paragraph::new(status_text).style(style);
+        let status = if let Some((msg, _)) = &self.flash_message {
+            // Flash: error on the left in red, hint line on the right in normal style.
+            let flash_left = format!(" {} ", msg);
+            let pad = total.saturating_sub(flash_left.len() + right.len());
+            let gap = " ".repeat(pad);
+            let spans: Vec<Span> = vec![
+                Span::styled(flash_left + &gap, Style::default().bg(Color::Red).fg(Color::White)),
+                Span::styled(right, Style::default().bg(Color::DarkGray).fg(Color::White)),
+            ];
+            Paragraph::new(Line::from(spans))
+        } else {
+            let pad = total.saturating_sub(conn_info.len() + right.len());
+            let text = format!("{}{}{}", conn_info, " ".repeat(pad), right);
+            Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        };
         f.render_widget(status, area);
     }
 }

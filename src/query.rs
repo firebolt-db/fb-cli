@@ -462,7 +462,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                                                     let rendered = render_table_output(context, &columns, &display_rows, terminal_width, max_cell);
                                                                     out!(context, "{}", rendered);
                                                                 }
-                                                                out_err!(context, "Showing first {} rows — collecting remainder for \\view...",
+                                                                out_err!(context, "Showing first {} rows — collecting remainder for Ctrl+V / \\view...",
                                                                     format_number(display_rows.len() as u64));
                                                                 display_emitted = true;
                                                             } else {
@@ -516,7 +516,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                 }
                             } else {
                                 // Partial display was already emitted; show the final total
-                                out_err!(context, "Showing {} of {} rows (press Ctrl+V to see all).",
+                                out_err!(context, "Showing {} of {} rows (press Ctrl+V or \\view to see all).",
                                     format_number(display_rows.len() as u64),
                                     format_number(all_rows.len() as u64));
                             }
