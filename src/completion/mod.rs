@@ -146,8 +146,20 @@ impl SqlCompleter {
             }
 
             for (table, column) in column_metadata {
-                // Only emit qualified "table.column" candidates; bare column names are skipped.
+                // Only emit qualified "table.column" candidates for tables that appear in
+                // the current SQL text. Columns from unmentioned tables are skipped.
                 if let Some(tbl) = table {
+                    let tbl_lower = tbl.to_lowercase();
+                    let table_in_query = tables_in_line.iter().any(|t| {
+                        let t_lower = t.to_lowercase();
+                        t_lower == tbl_lower
+                            || t_lower.ends_with(&format!(".{}", tbl_lower))
+                            || tbl_lower.ends_with(&format!(".{}", t_lower))
+                    });
+                    if !table_in_query {
+                        continue;
+                    }
+
                     let qualified_name = format!("{}.{}", tbl, column);
                     let qualified_lower = qualified_name.to_lowercase();
                     let col_lower = column.to_lowercase();
@@ -155,8 +167,6 @@ impl SqlCompleter {
                     // Match when the user types just the column name prefix ("acco") OR
                     // the qualified prefix ("orders.acc").
                     if col_lower.starts_with(&partial_lower) || qualified_lower.starts_with(&partial_lower) {
-                        // Score with the qualified name so non-query-table columns rank as
-                        // QualifiedColumnOtherTable (3000) rather than Unqualified (2000).
                         let score = self.scorer.score(
                             &qualified_name,
                             ItemType::Column,
