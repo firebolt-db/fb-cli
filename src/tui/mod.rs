@@ -1006,7 +1006,6 @@ impl TuiApp {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let _ = enable_raw_mode();
-        // Flush the backend and force ratatui to redraw everything from scratch.
         let _ = std::io::Write::flush(terminal.backend_mut());
         let _ = terminal.clear();
 
