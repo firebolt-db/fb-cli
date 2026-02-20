@@ -1,4 +1,5 @@
 pub mod history;
+pub mod history_search;
 pub mod layout;
 pub mod output_pane;
 
@@ -37,6 +38,7 @@ use crate::viewer::open_csvlens_viewer;
 use crate::CLI_VERSION;
 
 use history::History;
+use history_search::HistorySearch;
 use layout::compute_layout;
 use output_pane::OutputPane;
 
@@ -57,6 +59,9 @@ pub struct TuiApp {
     query_start: Option<Instant>,
     spinner_tick: u64,
     running_hint: String, // e.g. "Showing first N rows — collecting remainder..."
+
+    /// Active Ctrl+R reverse-search session; `None` when not searching.
+    history_search: Option<HistorySearch>,
 
     // After leaving alt-screen for csvlens we need a full redraw
     needs_clear: bool,
@@ -92,6 +97,7 @@ impl TuiApp {
             query_start: None,
             spinner_tick: 0,
             running_hint: String::new(),
+            history_search: None,
             needs_clear: false,
             should_quit: false,
             has_error: false,
@@ -238,11 +244,22 @@ impl TuiApp {
             return false;
         }
 
+        // ── Ctrl+R history search mode ────────────────────────────────────────
+        if self.history_search.is_some() {
+            return self.handle_history_search_key(key).await;
+        }
+
         match (key.code, key.modifiers) {
             // ── Exit ──────────────────────────────────────────────────────
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
                 return true;
+            }
+
+            // ── Ctrl+R: start reverse history search ─────────────────────
+            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
+                let saved = self.textarea.lines().join("\n");
+                self.history_search = Some(HistorySearch::new(saved));
             }
 
             // ── Cancel / clear ────────────────────────────────────────────
@@ -345,6 +362,83 @@ impl TuiApp {
                 let input = Input::from(key);
                 self.textarea.input(input);
                 self.history.reset_navigation();
+            }
+        }
+
+        false
+    }
+
+    // ── Ctrl+R history search ────────────────────────────────────────────────
+
+    /// Key handler active while `history_search` is `Some`.
+    /// Returns `true` if the app should quit (never, but matches signature).
+    async fn handle_history_search_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let entries = self.history.entries().to_vec();
+
+        match (key.code, key.modifiers) {
+            // Ctrl+R: cycle to next older match
+            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.search_older(&entries);
+                }
+            }
+
+            // Escape or Ctrl+G: cancel, restore saved content
+            (KeyCode::Esc, _)
+            | (KeyCode::Char('g'), crossterm::event::KeyModifiers::CONTROL) => {
+                let saved = self
+                    .history_search
+                    .take()
+                    .map(|hs| hs.saved_content().to_string())
+                    .unwrap_or_default();
+                self.set_textarea_content(&saved);
+            }
+
+            // Ctrl+C: cancel and clear
+            (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.history_search = None;
+                self.reset_textarea();
+            }
+
+            // Enter: accept the current match
+            (KeyCode::Enter, _) => {
+                let matched = self
+                    .history_search
+                    .as_ref()
+                    .and_then(|hs| hs.matched(&entries))
+                    .map(|s| s.to_string());
+                self.history_search = None;
+                let content = matched.unwrap_or_default();
+                self.set_textarea_content(&content);
+            }
+
+            // Backspace: remove one character from the query
+            (KeyCode::Backspace, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.pop_char(&entries);
+                }
+            }
+
+            // Printable character: append to search query
+            (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.push_char(c, &entries);
+                }
+            }
+
+            // Any other key: accept match, exit search, re-process key normally
+            _ => {
+                let matched = self
+                    .history_search
+                    .as_ref()
+                    .and_then(|hs| hs.matched(&entries))
+                    .map(|s| s.to_string());
+                self.history_search = None;
+                if let Some(content) = matched {
+                    self.set_textarea_content(&content);
+                }
+                // Re-dispatch to normal handler
+                return Box::pin(self.handle_key(key)).await;
             }
         }
 
@@ -511,6 +605,8 @@ impl TuiApp {
 
         if self.is_running {
             self.render_running_pane(f, layout.input);
+        } else if let Some(hs) = &self.history_search {
+            self.render_history_search_pane(f, layout.input, hs);
         } else {
             // Input area: outer block provides top + bottom separator lines
             let outer_block = Block::default()
@@ -562,6 +658,31 @@ impl TuiApp {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn render_history_search_pane(&self, f: &mut ratatui::Frame, area: Rect, hs: &HistorySearch) {
+        let outer_block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = outer_block.inner(area);
+        f.render_widget(outer_block, area);
+
+        let entries = self.history.entries();
+        let matched = hs.matched(entries).unwrap_or("");
+
+        // First line: "(reverse-i-search)`query':"
+        let query_line = Line::from(vec![
+            Span::styled("(reverse-i-search)`", Style::default().fg(Color::DarkGray)),
+            Span::styled(hs.query().to_string(), Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::styled("':", Style::default().fg(Color::DarkGray)),
+        ]);
+
+        // Second line: the matched entry (truncated to fit)
+        let width = inner.width as usize;
+        let display: String = matched.chars().take(width).collect();
+        let matched_line = Line::from(Span::styled(display, Style::default().fg(Color::Yellow)));
+
+        f.render_widget(Paragraph::new(vec![query_line, matched_line]), inner);
+    }
+
     fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
@@ -569,8 +690,10 @@ impl TuiApp {
         let left = format!(" {} | {} | v{}", host, db, CLI_VERSION);
         let right = if self.is_running {
             " Ctrl+C cancel ".to_string()
+        } else if self.history_search.is_some() {
+            " Enter accept  Ctrl+R older  Esc cancel ".to_string()
         } else {
-            " Ctrl+D exit  Ctrl+H help ".to_string()
+            " Ctrl+D exit  Ctrl+R search  Ctrl+H help ".to_string()
         };
 
         // Pad between left and right

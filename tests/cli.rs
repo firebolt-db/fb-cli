@@ -89,15 +89,15 @@ fn test_params_escaping() {
     assert!(output.status.success());
     let mut lines = stdout.lines();
     // First query result
-    assert_eq!(lines.next().unwrap(), "?column?");
+    assert_eq!(lines.next().unwrap(), "param");
     assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "a=}&");
     // Second query result
-    assert_eq!(lines.next().unwrap(), "?column?");
+    assert_eq!(lines.next().unwrap(), "param");
     assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "a=}&");
     // Third query result
-    assert_eq!(lines.next().unwrap(), "?column?");
+    assert_eq!(lines.next().unwrap(), "param");
     assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "b=}&");
 }

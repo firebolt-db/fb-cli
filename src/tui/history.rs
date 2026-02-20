@@ -70,6 +70,11 @@ impl History {
         let _ = self.append_to_file(&entry);
     }
 
+    /// Read-only view of all history entries (oldest first).
+    pub fn entries(&self) -> &[String] {
+        &self.entries
+    }
+
     /// Navigate backward (older). Returns the entry to display, or `None` if history is empty.
     /// `current` is the text currently in the editor (saved so we can restore it on forward).
     pub fn go_back(&mut self, current: &str) -> Option<String> {
