@@ -8,6 +8,7 @@ mod context;
 mod highlight;
 mod meta_commands;
 mod query;
+mod sql_parser;
 mod table_renderer;
 mod tui;
 mod tui_msg;

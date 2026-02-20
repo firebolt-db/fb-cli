@@ -32,6 +32,7 @@ use crate::completion::schema_cache::SchemaCache;
 use crate::completion::usage_tracker::UsageTracker;
 use crate::completion::SqlCompleter;
 use crate::context::Context;
+use crate::highlight::SqlHighlighter;
 use crate::meta_commands::handle_meta_command;
 use crate::query::{query, try_split_queries};
 use crate::viewer::open_csvlens_viewer;
@@ -63,6 +64,7 @@ pub struct TuiApp {
     history: History,
     schema_cache: Arc<SchemaCache>,
     completer: SqlCompleter,
+    highlighter: SqlHighlighter,
 
     // Query execution state
     query_rx: Option<mpsc::UnboundedReceiver<TuiMsg>>,
@@ -96,6 +98,9 @@ impl TuiApp {
         let _ = history.load();
 
         let textarea = Self::make_textarea();
+        let highlighter = SqlHighlighter::new(!context.args.no_completion).unwrap_or_else(|_| {
+            SqlHighlighter::new(false).unwrap()
+        });
 
         Self {
             context,
@@ -104,6 +109,7 @@ impl TuiApp {
             history,
             schema_cache,
             completer,
+            highlighter,
             query_rx: None,
             cancel_token: None,
             is_running: false,
@@ -643,10 +649,74 @@ impl TuiApp {
             let prompt = Paragraph::new("❯").style(Style::default().fg(Color::Green));
             f.render_widget(prompt, chunks[0]);
             f.render_widget(&self.textarea, chunks[1]);
+
+            // Apply per-token syntax highlighting to the rendered textarea buffer
+            let textarea_area = chunks[1];
+            self.apply_textarea_highlights(f.buffer_mut(), textarea_area);
         }
 
         // Status bar
         self.render_status_bar(f, layout.status);
+    }
+
+    /// Apply syntax highlighting to the textarea by post-processing the ratatui buffer.
+    ///
+    /// After `tui-textarea` renders its content (cursor, selection, etc.) we walk
+    /// through the buffer cells corresponding to the textarea's screen area and
+    /// patch the foreground colour of "plain" text cells.  We skip the cursor
+    /// character so the block-cursor stays visible.
+    fn apply_textarea_highlights(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: ratatui::layout::Rect,
+    ) {
+        let lines = self.textarea.lines();
+        let full_text = lines.join("\n");
+        let spans = self.highlighter.highlight_to_spans(&full_text);
+        if spans.is_empty() {
+            return;
+        }
+
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+
+        let mut byte_offset = 0usize;
+        for (line_idx, line) in lines.iter().enumerate() {
+            let screen_y = area.y + line_idx as u16;
+            if screen_y >= area.y + area.height {
+                break;
+            }
+
+            let mut char_col = 0usize;
+            for (byte_in_line, _ch) in line.char_indices() {
+                let byte_pos = byte_offset + byte_in_line;
+                let screen_x = area.x + char_col as u16;
+                if screen_x >= area.x + area.width {
+                    break;
+                }
+
+                // Skip the cursor character — it has special styling (REVERSED)
+                // that we want to preserve exactly as tui-textarea rendered it.
+                if line_idx == cursor_row && char_col == cursor_col {
+                    char_col += 1;
+                    continue;
+                }
+
+                // Find the highest-priority span covering this byte position.
+                if let Some((_, style)) =
+                    spans.iter().find(|(r, _)| r.start <= byte_pos && byte_pos < r.end)
+                {
+                    let pos = ratatui::layout::Position::new(screen_x, screen_y);
+                    if let Some(cell) = buf.cell_mut(pos) {
+                        // Patch only the foreground colour; preserve bg, modifiers etc.
+                        let current = cell.style();
+                        cell.set_style(current.patch(*style));
+                    }
+                }
+                char_col += 1;
+            }
+
+            byte_offset += line.len() + 1; // +1 for the '\n' joining lines
+        }
     }
 
     fn render_running_pane(&self, f: &mut ratatui::Frame, area: Rect) {
