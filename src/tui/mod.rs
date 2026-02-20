@@ -354,8 +354,11 @@ impl TuiApp {
             self.help_visible = true;
             return false;
         }
-        // Escape closes the help overlay (and nothing else).
-        if self.help_visible && key.code == KeyCode::Esc {
+        // Escape or q closes the help overlay (and nothing else).
+        if self.help_visible
+            && (key.code == KeyCode::Esc
+                || key.code == KeyCode::Char('q'))
+        {
             self.help_visible = false;
             return false;
         }
@@ -1523,11 +1526,11 @@ impl TuiApp {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Press Esc to close", sep_style),
+            Span::styled("Press Esc or q to close", sep_style),
         ]));
 
         // Sizing: fixed inner content width + borders
-        let content_w = (key_col + 2 + 36) as u16 + 4; // key col + desc + padding + borders
+        let content_w = (key_col + 2 + 46) as u16 + 4; // key col + desc + padding + borders
         let content_h = lines.len() as u16 + 2;
 
         let popup_w = content_w.min(area.width.saturating_sub(6));
@@ -1554,7 +1557,7 @@ impl TuiApp {
         f.render_widget(Clear, popup_rect);
         let block = Block::default()
             .title(Span::styled(
-                " ✦ Help ",
+                " ✦ Help  ·  Esc / q to close ",
                 Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
