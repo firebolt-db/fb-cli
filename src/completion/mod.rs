@@ -224,7 +224,19 @@ impl SqlCompleter {
             .into_iter()
             .filter(|c| seen.insert(c.display.clone()))
             .map(|c| CompletionItem {
-                value: c.insert.clone(),
+                // For columns: insert only the bare column name (last component
+                // of the qualified display name).  The table is already in the
+                // query, so there is no need to repeat it on every column reference.
+                // Other types keep their full insert value.
+                value: if c.item_type == ItemType::Column {
+                    c.display
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&c.insert)
+                        .to_string()
+                } else {
+                    c.insert.clone()
+                },
                 description: c.description.to_string(),
                 item_type: c.item_type,
             })
