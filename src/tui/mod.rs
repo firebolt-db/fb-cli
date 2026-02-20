@@ -399,6 +399,11 @@ impl TuiApp {
                 self.open_fuzzy_search();
             }
 
+            // ── Alt+F: format SQL ─────────────────────────────────────────
+            (KeyCode::Char('f'), m) if m.contains(KeyModifiers::ALT) => {
+                self.format_sql();
+            }
+
             // ── Tab: trigger / navigate completion ───────────────────────
             (KeyCode::Tab, _) => {
                 self.trigger_or_advance_completion();
@@ -1090,6 +1095,7 @@ impl TuiApp {
              Ctrl+Space      - Fuzzy schema search\n\
              Tab             - Open / navigate completion popup\n\
              Shift+Tab       - Navigate completion popup backwards\n\
+             Alt+F           - Format SQL\n\
              Ctrl+D          - Exit\n\
              Ctrl+C          - Cancel current input (or running query)\n\
              Page Up/Down    - Scroll output\n\
@@ -1173,6 +1179,23 @@ impl TuiApp {
     }
 
     // ── Textarea helpers ─────────────────────────────────────────────────────
+
+    /// Format the current textarea content as SQL (Alt+F).
+    fn format_sql(&mut self) {
+        let sql = self.textarea.lines().join("\n");
+        if sql.trim().is_empty() {
+            return;
+        }
+        let options = sqlformat::FormatOptions {
+            indent: sqlformat::Indent::Spaces(2),
+            uppercase: Some(true),
+            ..sqlformat::FormatOptions::default()
+        };
+        let formatted = sqlformat::format(&sql, &sqlformat::QueryParams::None, &options);
+        if formatted != sql {
+            self.set_textarea_content(&formatted);
+        }
+    }
 
     fn reset_textarea(&mut self) {
         self.textarea = Self::make_textarea();
@@ -1418,7 +1441,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete ".to_string()
+            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete  Alt+F format ".to_string()
         };
 
         let total = area.width as usize;
