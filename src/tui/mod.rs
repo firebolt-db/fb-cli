@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
-        KeyboardEnhancementFlags, KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyboardEnhancementFlags,
+        KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -203,10 +202,7 @@ impl TuiApp {
         // Silently ignore on terminals that don't support it.
         let _ = execute!(
             stdout,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
-            )
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
@@ -352,17 +348,20 @@ impl TuiApp {
 
     /// Returns `true` when the app should exit.
     async fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
-        // ── Ctrl+H help overlay (hold-to-show) ───────────────────────────────
+        // ── Ctrl+H help overlay ──────────────────────────────────────────────
         // Handled before everything else so it works during queries too.
-        let is_ctrl_h = key.code == KeyCode::Char('h')
-            && key.modifiers.contains(KeyModifiers::CONTROL);
-        if is_ctrl_h {
-            self.help_visible = key.kind != KeyEventKind::Release;
+        if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.help_visible = true;
             return false;
         }
-        // Any other key press dismisses the help overlay.
-        if self.help_visible && key.kind == KeyEventKind::Press {
+        // Escape closes the help overlay (and nothing else).
+        if self.help_visible && key.code == KeyCode::Esc {
             self.help_visible = false;
+            return false;
+        }
+        // While the overlay is open, swallow all other keys.
+        if self.help_visible {
+            return false;
         }
 
         // While a query is running only Ctrl+C is accepted (to cancel)
@@ -1076,10 +1075,7 @@ impl TuiApp {
         let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
         let _ = execute!(
             terminal.backend_mut(),
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
-            )
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let _ = enable_raw_mode();
         let _ = std::io::Write::flush(terminal.backend_mut());
@@ -1450,56 +1446,128 @@ impl TuiApp {
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {
         use ratatui::{
-            layout::Margin,
-            widgets::{Block, Borders, Clear, Paragraph, Wrap},
+            style::Modifier,
+            text::Span,
+            widgets::{BorderType, Clear, Paragraph, Wrap},
         };
 
-        const HELP: &str = "\
-Keyboard shortcuts
-──────────────────
-Ctrl+D          Exit
-Ctrl+C          Cancel input / cancel running query
-Ctrl+V          Open last result in csvlens viewer
-Ctrl+R          Reverse history search
-Ctrl+Space      Fuzzy schema search
-Tab             Open / navigate completion popup
-Shift+Tab       Navigate completion popup backwards
-Alt+F           Format SQL (uppercase keywords, 2-space indent)
-Page Up/Down    Scroll output pane
-Ctrl+Up/Down    Cycle through history
+        // Build styled help lines
+        let section_style = Style::default()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD);
+        let sep_style = Style::default().fg(Color::Indexed(240));
+        let key_style = Style::default().fg(Color::LightYellow);
+        let desc_style = Style::default().fg(Color::White);
+        let cmd_style = Style::default().fg(Color::LightCyan);
 
-Special commands
-────────────────
-\\help           Show this help
-\\set k=v        Set a query parameter
-\\unset k        Remove a query parameter
-\\benchmark [N]  Run query N times (default 3) and report timings
-\\export <file>  Export last result to CSV/JSON/TSV";
+        let keybinds: &[(&str, &str)] = &[
+            ("Ctrl+D",        "Exit"),
+            ("Ctrl+C",        "Cancel input / cancel running query"),
+            ("Ctrl+V",        "Open last result in csvlens viewer"),
+            ("Ctrl+R",        "Reverse history search"),
+            ("Ctrl+Space",    "Fuzzy schema search"),
+            ("Tab",           "Open / navigate completion popup"),
+            ("Shift+Tab",     "Navigate completion popup backwards"),
+            ("Alt+F",         "Format SQL (uppercase keywords, 2-space indent)"),
+            ("Page Up/Down",  "Scroll output pane"),
+            ("Ctrl+Up/Down",  "Cycle through history"),
+            ("Escape",        "Close any open popup"),
+        ];
+        let commands: &[(&str, &str)] = &[
+            ("\\help",           "Show this help"),
+            ("\\set k=v",        "Set a query parameter"),
+            ("\\unset k",        "Remove a query parameter"),
+            ("\\benchmark [N]",  "Run query N times (default 3) and report timings"),
+            ("\\export <file>",  "Export last result to CSV/JSON/TSV"),
+        ];
 
-        let lines: Vec<ratatui::text::Line> = HELP
-            .lines()
-            .map(|l| ratatui::text::Line::from(l.to_string()))
-            .collect();
-        let content_h = lines.len() as u16 + 2; // +2 for borders
-        let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(40) as u16 + 4;
+        // Determine column widths
+        let key_col = keybinds.iter().chain(commands.iter()).map(|(k, _)| k.len()).max().unwrap_or(14) + 2;
 
-        let popup_w = content_w.min(area.width.saturating_sub(4));
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Section: keyboard shortcuts
+        lines.push(Line::from(Span::styled("  Keyboard shortcuts", section_style)));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "─".repeat(key_col + 30)),
+            sep_style,
+        )));
+        for (key, desc) in keybinds {
+            let padding = key_col.saturating_sub(key.len());
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(key.to_string(), key_style),
+                Span::raw(" ".repeat(padding)),
+                Span::styled(desc.to_string(), desc_style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Section: special commands
+        lines.push(Line::from(Span::styled("  Special commands", section_style)));
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "─".repeat(key_col + 30)),
+            sep_style,
+        )));
+        for (cmd, desc) in commands {
+            let padding = key_col.saturating_sub(cmd.len());
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(cmd.to_string(), cmd_style),
+                Span::raw(" ".repeat(padding)),
+                Span::styled(desc.to_string(), desc_style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Press Esc to close", sep_style),
+        ]));
+
+        // Sizing: fixed inner content width + borders
+        let content_w = (key_col + 2 + 36) as u16 + 4; // key col + desc + padding + borders
+        let content_h = lines.len() as u16 + 2;
+
+        let popup_w = content_w.min(area.width.saturating_sub(6));
         let popup_h = content_h.min(area.height.saturating_sub(4));
         let x = area.x + area.width.saturating_sub(popup_w) / 2;
         let y = area.y + area.height.saturating_sub(popup_h) / 2;
         let popup_rect = Rect::new(x, y, popup_w, popup_h);
 
+        // Shadow: render a dark rect shifted 1 cell right + 1 cell down
+        if popup_rect.right() + 1 < area.right() && popup_rect.bottom() + 1 < area.bottom() {
+            let shadow_rect = Rect::new(
+                popup_rect.x + 1,
+                popup_rect.y + 1,
+                popup_rect.width,
+                popup_rect.height,
+            );
+            f.render_widget(
+                Paragraph::new("").style(Style::default().bg(Color::Indexed(232))),
+                shadow_rect,
+            );
+        }
+
+        // Main popup background + border
         f.render_widget(Clear, popup_rect);
         let block = Block::default()
-            .title(" Help — release Ctrl+H to close ")
+            .title(Span::styled(
+                " ✦ Help ",
+                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Indexed(67))) // steel blue
+            .style(Style::default().bg(Color::Indexed(234)));       // dark background
+
         let inner = block.inner(popup_rect);
         f.render_widget(block, popup_rect);
         f.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: false })
-                .style(Style::default()),
+                .style(Style::default().bg(Color::Indexed(234))),
             inner,
         );
     }
