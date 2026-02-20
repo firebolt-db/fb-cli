@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tui_textarea::{CursorMove, Input, TextArea};
 
+use crate::completion::context_analyzer::ContextAnalyzer;
 use crate::completion::fuzzy_completer::FuzzyCompleter;
 use crate::completion::schema_cache::SchemaCache;
 use crate::completion::usage_tracker::UsageTracker;
@@ -131,8 +132,11 @@ impl TuiApp {
             .usage_tracker
             .clone()
             .unwrap_or_else(|| Arc::new(UsageTracker::new(10)));
-        let completer =
-            SqlCompleter::new(schema_cache.clone(), usage_tracker, !context.args.no_completion);
+        let completer = SqlCompleter::new(
+            schema_cache.clone(),
+            usage_tracker.clone(),
+            !context.args.no_completion,
+        );
 
         let history_path = crate::utils::history_path().unwrap_or_default();
         let mut history = History::new(history_path);
@@ -142,7 +146,7 @@ impl TuiApp {
         let highlighter = SqlHighlighter::new(!context.args.no_completion).unwrap_or_else(|_| {
             SqlHighlighter::new(false).unwrap()
         });
-        let fuzzy_completer = FuzzyCompleter::new(schema_cache.clone());
+        let fuzzy_completer = FuzzyCompleter::new(schema_cache.clone(), usage_tracker);
 
         Self {
             context,
@@ -656,9 +660,18 @@ impl TuiApp {
 
     // ── Fuzzy search ─────────────────────────────────────────────────────────
 
+    /// Extract the tables referenced in the current textarea content so fuzzy
+    /// search can apply the same context-aware priority as tab completion.
+    fn current_sql_tables(&self) -> Vec<String> {
+        let lines = self.textarea.lines();
+        let sql = lines.join("\n");
+        ContextAnalyzer::extract_tables(&sql)
+    }
+
     fn open_fuzzy_search(&mut self) {
+        let tables = self.current_sql_tables();
         let mut state = FuzzyState::new();
-        state.items = self.fuzzy_completer.search("", 100);
+        state.items = self.fuzzy_completer.search("", 100, &tables);
         self.fuzzy_state = Some(state);
     }
 
@@ -703,7 +716,8 @@ impl TuiApp {
                 if let Some(fs) = &mut self.fuzzy_state {
                     fs.pop_char();
                     let q = fs.query.clone();
-                    let items = self.fuzzy_completer.search(&q, 100);
+                    let tables = self.current_sql_tables();
+                    let items = self.fuzzy_completer.search(&q, 100, &tables);
                     self.fuzzy_state.as_mut().unwrap().items = items;
                 }
             }
@@ -713,7 +727,8 @@ impl TuiApp {
                 if let Some(fs) = &mut self.fuzzy_state {
                     fs.push_char(c);
                     let q = fs.query.clone();
-                    let items = self.fuzzy_completer.search(&q, 100);
+                    let tables = self.current_sql_tables();
+                    let items = self.fuzzy_completer.search(&q, 100, &tables);
                     self.fuzzy_state.as_mut().unwrap().items = items;
                 }
             }

@@ -396,6 +396,18 @@ impl SchemaCache {
         result
     }
 
+    /// Test-only helper: directly populate the cache with the given tables.
+    #[cfg(test)]
+    pub fn inject_test_tables(&self, tables: Vec<TableMetadata>) {
+        let mut map = std::collections::HashMap::new();
+        for t in tables {
+            let key = format!("{}.{}", t.schema_name, t.table_name);
+            map.insert(key, t);
+        }
+        *self.tables.write().unwrap() = map;
+        self.complete_refresh();
+    }
+
     async fn do_refresh(&self, context: &mut Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Query tables (including system schemas - they'll be deprioritized by the scorer)
         let tables_query = "SELECT table_schema, table_name \
@@ -447,18 +459,23 @@ impl SchemaCache {
             }
         }
 
-        // Parse columns and add to tables
+        // Parse columns and add to tables.
+        // Use the entry API so that tables appearing only in information_schema.columns
+        // (but not in information_schema.tables) still get cache entries with their columns.
         match columns_result {
             Ok(columns_output) => {
                 if let Some(column_list) = Self::parse_columns(&columns_output) {
                     for (schema, table, column, data_type) in column_list {
                         let key = format!("{}.{}", schema, table);
-                        if let Some(table_meta) = new_tables.get_mut(&key) {
-                            table_meta.columns.push(ColumnMetadata {
-                                name: column,
-                                data_type,
-                            });
-                        }
+                        let table_meta = new_tables.entry(key).or_insert_with(|| TableMetadata {
+                            schema_name: schema.clone(),
+                            table_name: table.clone(),
+                            columns: Vec::new(),
+                        });
+                        table_meta.columns.push(ColumnMetadata {
+                            name: column,
+                            data_type,
+                        });
                     }
                 } else {
                     eprintln!("Warning: Failed to parse columns from schema query");
