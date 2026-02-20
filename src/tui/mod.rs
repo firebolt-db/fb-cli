@@ -967,17 +967,38 @@ impl TuiApp {
             return;
         }
 
-        // Temporarily leave the TUI to let csvlens take over the terminal.
-        let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
-
-        if let Err(e) = open_csvlens_viewer(&self.context) {
-            eprintln!("Error: {}", e);
+        // In TUI mode the viewer always has parsed data available, so bypass the
+        // format guard in open_csvlens_viewer by temporarily setting client:auto.
+        let saved_format = self.context.args.format.clone();
+        if !self.context.args.format.starts_with("client:") {
+            self.context.args.format = "client:auto".to_string();
         }
 
+        // Suspend the TUI and hand the terminal to csvlens.
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
+        );
+
+        let result = open_csvlens_viewer(&self.context);
+
+        let _ = execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
         let _ = enable_raw_mode();
-        let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+
+        self.context.args.format = saved_format;
         self.needs_clear = true;
+
+        if let Err(e) = result {
+            self.set_flash(format!("Viewer error: {}", e));
+        }
     }
 
     /// Show a temporary error message in the status bar for ~2 seconds.
