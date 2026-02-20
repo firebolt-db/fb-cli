@@ -6,6 +6,8 @@ pub enum TuiMsg {
     StyledLines(Vec<TuiLine>),
     /// Streaming progress update: total data rows received so far.
     Progress(u64),
+    /// The parsed result of the last successful SELECT query (for csvlens / export).
+    ParsedResult(crate::table_renderer::ParsedResult),
 }
 
 /// A single rendered line made up of zero or more styled spans.

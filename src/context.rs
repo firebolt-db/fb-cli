@@ -127,6 +127,14 @@ impl Context {
         }
     }
 
+    /// Send the parsed result back to the TUI so it can be used by the csvlens viewer / export.
+    /// No-op in headless mode (caller already sets `context.last_result` directly).
+    pub fn emit_parsed_result(&self, result: &crate::table_renderer::ParsedResult) {
+        if let Some(tx) = &self.tui_output_tx {
+            let _ = tx.send(TuiMsg::ParsedResult(result.clone()));
+        }
+    }
+
     /// Returns `true` when running inside the TUI event loop.
     pub fn is_tui(&self) -> bool {
         self.tui_output_tx.is_some()

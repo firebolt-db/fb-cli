@@ -116,6 +116,9 @@ pub struct TuiApp {
     needs_clear: bool,
     should_quit: bool,
     pub has_error: bool,
+
+    /// Temporary message shown in the status bar, with the time it was set.
+    flash_message: Option<(String, Instant)>,
 }
 
 impl TuiApp {
@@ -159,6 +162,7 @@ impl TuiApp {
             needs_clear: false,
             should_quit: false,
             has_error: false,
+            flash_message: None,
         }
     }
 
@@ -260,6 +264,9 @@ impl TuiApp {
             match rx.try_recv() {
                 Ok(TuiMsg::Progress(n)) => {
                     self.progress_rows = n;
+                }
+                Ok(TuiMsg::ParsedResult(result)) => {
+                    self.context.last_result = Some(result);
                 }
                 Ok(TuiMsg::StyledLines(lines)) => {
                     self.output.push_tui_lines(lines);
@@ -759,8 +766,7 @@ impl TuiApp {
         let result = match &self.context.last_result {
             Some(r) => r.clone(),
             None => {
-                self.output
-                    .push_line("No query results to export. Run a query first.");
+                self.set_flash("No results to export — run a query first");
                 return;
             }
         };
@@ -957,8 +963,7 @@ impl TuiApp {
 
     fn open_viewer(&mut self) {
         if self.context.last_result.is_none() {
-            self.output
-                .push_line("No query results to display. Run a query first.");
+            self.set_flash("No results to display — run a query first");
             return;
         }
 
@@ -973,6 +978,11 @@ impl TuiApp {
         let _ = enable_raw_mode();
         let _ = execute!(std::io::stdout(), EnterAlternateScreen);
         self.needs_clear = true;
+    }
+
+    /// Show a temporary error message in the status bar for ~2 seconds.
+    fn set_flash(&mut self, msg: impl Into<String>) {
+        self.flash_message = Some((msg.into(), Instant::now()));
     }
 
     fn do_refresh(&mut self) {
@@ -993,8 +1003,17 @@ impl TuiApp {
 
     fn show_help(&mut self) {
         self.output.push_ansi_text(
-            "Special commands:\n\
-             \\view                       - Open last query result in csvlens viewer\n\
+            "Keyboard shortcuts:\n\
+             Ctrl+V          - Open last result in csvlens viewer\n\
+             Ctrl+R          - Reverse history search\n\
+             Ctrl+Space      - Fuzzy schema search\n\
+             Tab             - Open / navigate completion popup\n\
+             Shift+Tab       - Navigate completion popup backwards\n\
+             Ctrl+D          - Exit\n\
+             Ctrl+C          - Cancel current input (or running query)\n\
+             Page Up/Down    - Scroll output\n\
+             \n\
+             Special commands:\n\
              \\refresh                    - Manually refresh schema cache\n\
              \\benchmark [N] <query>      - Run query N+1 times (1 warmup), show timing stats\n\
              \\export <file> [fmt]        - Export last result to file (csv/tsv/json/jsonlines)\n\
@@ -1004,14 +1023,6 @@ impl TuiApp {
              set format = <value>;       - Change output format\n\
              unset format;               - Reset format to default\n\
              set completion = on/off;    - Enable/disable auto-completion\n\
-             \n\
-             Keyboard shortcuts:\n\
-             Tab             - Open / navigate completion popup\n\
-             Shift+Tab       - Navigate completion popup backwards\n\
-             Ctrl+R          - Reverse history search\n\
-             Ctrl+V          - Open csvlens viewer for last result\n\
-             Ctrl+D          - Exit\n\
-             Ctrl+C          - Cancel current input (or running query)\n\
              Ctrl+Up/Down    - Cycle history\n\
              Page Up/Down    - Scroll output pane\n\
              Shift+Enter     - Insert newline without submitting",
@@ -1273,21 +1284,32 @@ impl TuiApp {
         f.render_widget(Paragraph::new(vec![query_line, matched_line]), inner);
     }
 
-    fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
+    fn render_status_bar(&mut self, f: &mut ratatui::Frame, area: Rect) {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
 
         let left = format!(" {} | {} | v{}", host, db, CLI_VERSION);
-        let right = if self.is_running {
-            " Ctrl+C cancel ".to_string()
+
+        // Expire flash messages older than 2 seconds.
+        if let Some((_, t)) = &self.flash_message {
+            if t.elapsed() >= Duration::from_secs(2) {
+                self.flash_message = None;
+            }
+        }
+
+        let (right, style) = if let Some((msg, _)) = &self.flash_message {
+            let right = format!(" {} ", msg);
+            (right, Style::default().bg(Color::Red).fg(Color::White))
+        } else if self.is_running {
+            (" Ctrl+C cancel ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
         } else if self.history_search.is_some() {
-            " Enter accept  Ctrl+R older  Esc cancel ".to_string()
+            (" Enter accept  Ctrl+R older  Esc cancel ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
         } else if self.fuzzy_state.is_some() {
-            " Enter accept  ↑/↓ navigate  Esc close ".to_string()
+            (" Enter accept  ↑/↓ navigate  Esc close ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
         } else if self.completion_state.is_some() {
-            " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
+            (" Enter accept  Tab/↑/↓ navigate  Esc close ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
         } else {
-            " Ctrl+D exit  Ctrl+Space fuzzy  Tab complete ".to_string()
+            (" Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete ".to_string(), Style::default().bg(Color::DarkGray).fg(Color::White))
         };
 
         // Pad between left and right
@@ -1295,8 +1317,7 @@ impl TuiApp {
         let pad = total.saturating_sub(left.len() + right.len());
         let status_text = format!("{}{}{}", left, " ".repeat(pad), right);
 
-        let status = Paragraph::new(status_text)
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let status = Paragraph::new(status_text).style(style);
         f.render_widget(status, area);
     }
 }

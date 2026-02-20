@@ -516,16 +516,18 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                 }
                             } else {
                                 // Partial display was already emitted; show the final total
-                                out_err!(context, "Showing {} of {} rows (use \\view to see all).",
+                                out_err!(context, "Showing {} of {} rows (press Ctrl+V to see all).",
                                     format_number(display_rows.len() as u64),
                                     format_number(all_rows.len() as u64));
                             }
-                            context.last_result = Some(ParsedResult {
+                            let parsed_result = ParsedResult {
                                 columns: columns.clone(),
                                 rows: all_rows,
                                 statistics: statistics.clone(),
                                 errors: None,
-                            });
+                            };
+                            context.emit_parsed_result(&parsed_result);
+                            context.last_result = Some(parsed_result);
                             context.last_stats = compute_stats(context.args.concise, &statistics);
                         }
 
@@ -539,6 +541,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         if context.args.should_render_table() {
                             match table_renderer::parse_jsonlines_compact(&body) {
                                 Ok(parsed) => {
+                                    context.emit_parsed_result(&parsed);
                                     context.last_result = Some(parsed.clone());
                                     if let Some(errors) = parsed.errors {
                                         for error in errors {
