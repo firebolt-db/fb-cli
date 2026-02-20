@@ -588,6 +588,9 @@ impl TuiApp {
         if items.len() == 1 {
             let value = items.into_iter().next().unwrap().value;
             let partial_len = cursor_col - word_start_byte_in_line;
+            // Jump to word start, then delete the partial word forward, then insert.
+            // (delete_str deletes FORWARD from cursor, so we must reposition first.)
+            self.textarea.move_cursor(CursorMove::Jump(cursor_row as u16, word_start_byte_in_line as u16));
             self.textarea.delete_str(partial_len);
             self.textarea.insert_str(&value);
             return;
@@ -609,8 +612,11 @@ impl TuiApp {
             None => return,
         };
 
-        let (_, cursor_col) = self.textarea.cursor();
+        let (cursor_row, cursor_col) = self.textarea.cursor();
         let partial_len = cursor_col - cs.word_start_col;
+        // Jump to word start, then delete the partial word forward, then insert.
+        // (delete_str deletes FORWARD from cursor, so we must reposition first.)
+        self.textarea.move_cursor(CursorMove::Jump(cursor_row as u16, cs.word_start_col as u16));
         self.textarea.delete_str(partial_len);
         self.textarea.insert_str(&selected);
     }
