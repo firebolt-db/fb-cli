@@ -1,3 +1,4 @@
+pub mod completion_popup;
 pub mod history;
 pub mod history_search;
 pub mod layout;
@@ -38,6 +39,7 @@ use crate::query::{query, try_split_queries};
 use crate::viewer::open_csvlens_viewer;
 use crate::CLI_VERSION;
 
+use completion_popup::CompletionState;
 use history::History;
 use history_search::HistorySearch;
 use layout::compute_layout;
@@ -74,6 +76,9 @@ pub struct TuiApp {
     spinner_tick: u64,
     running_hint: String, // e.g. "Showing first N rows — collecting remainder..."
     progress_rows: u64,   // rows received so far (streamed from query task)
+
+    /// Active tab-completion popup session; `None` when the popup is closed.
+    completion_state: Option<CompletionState>,
 
     /// Active Ctrl+R reverse-search session; `None` when not searching.
     history_search: Option<HistorySearch>,
@@ -117,6 +122,7 @@ impl TuiApp {
             spinner_tick: 0,
             running_hint: String::new(),
             progress_rows: 0,
+            completion_state: None,
             history_search: None,
             needs_clear: false,
             should_quit: false,
@@ -272,6 +278,11 @@ impl TuiApp {
             return self.handle_history_search_key(key).await;
         }
 
+        // ── Completion popup navigation ───────────────────────────────────────
+        if self.completion_state.is_some() {
+            return self.handle_completion_key(key).await;
+        }
+
         match (key.code, key.modifiers) {
             // ── Exit ──────────────────────────────────────────────────────
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -287,6 +298,7 @@ impl TuiApp {
 
             // ── Cancel / clear ────────────────────────────────────────────
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.completion_state = None;
                 self.reset_textarea();
                 self.output.push_line("^C");
                 self.history.reset_navigation();
@@ -295,6 +307,18 @@ impl TuiApp {
             // ── Ctrl+V: open csvlens ──────────────────────────────────────
             (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.open_viewer();
+            }
+
+            // ── Tab: trigger / navigate completion ───────────────────────
+            (KeyCode::Tab, _) => {
+                self.trigger_or_advance_completion();
+            }
+
+            // ── Shift+Tab: navigate completion backwards ──────────────────
+            (KeyCode::BackTab, _) => {
+                if let Some(cs) = &mut self.completion_state {
+                    cs.prev();
+                }
             }
 
             // ── Shift+Enter: always insert newline ───────────────────────
@@ -465,6 +489,101 @@ impl TuiApp {
             }
         }
 
+        false
+    }
+
+    // ── Tab completion ───────────────────────────────────────────────────────
+
+    /// Called on Tab when no popup is open: computes candidates and opens the popup.
+    /// If there is exactly one candidate, accepts it immediately.
+    /// If the popup is already open, advances to the next item.
+    fn trigger_or_advance_completion(&mut self) {
+        if let Some(cs) = &mut self.completion_state {
+            cs.next();
+            return;
+        }
+
+        // Compute current cursor position in terms of the full content
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        let lines = self.textarea.lines();
+        // byte offset of cursor in the full joined text
+        let byte_offset: usize = lines[..cursor_row].iter().map(|l| l.len() + 1).sum::<usize>()
+            + cursor_col;
+        // current line up to cursor for completion
+        let line_to_cursor = &lines[cursor_row][..cursor_col];
+
+        let (word_start_byte_in_line, items) =
+            self.completer.complete_at(line_to_cursor, cursor_col);
+
+        if items.is_empty() {
+            return;
+        }
+
+        // word_start as byte offset in the FULL text (for deletion later)
+        let word_start_byte =
+            byte_offset - (cursor_col - word_start_byte_in_line);
+
+        // For single-item completions, accept immediately
+        if items.len() == 1 {
+            let value = items.into_iter().next().unwrap().value;
+            let partial_len = cursor_col - word_start_byte_in_line;
+            self.textarea.delete_str(partial_len);
+            self.textarea.insert_str(&value);
+            return;
+        }
+
+        let cs = CompletionState::new(items, word_start_byte, word_start_byte_in_line, cursor_row);
+        self.completion_state = Some(cs);
+    }
+
+    /// Accept the currently selected completion item, replace the partial word, close popup.
+    fn accept_completion(&mut self) {
+        let cs = match self.completion_state.take() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let selected = match cs.selected_item() {
+            Some(item) => item.value.clone(),
+            None => return,
+        };
+
+        let (_, cursor_col) = self.textarea.cursor();
+        let partial_len = cursor_col - cs.word_start_col;
+        self.textarea.delete_str(partial_len);
+        self.textarea.insert_str(&selected);
+    }
+
+    /// Key handler active while the completion popup is open.
+    /// Returns `true` only if the app should quit (never, but matches signature).
+    async fn handle_completion_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match (key.code, key.modifiers) {
+            // Tab / Down: next item
+            (KeyCode::Tab, _) | (KeyCode::Down, _) => {
+                if let Some(cs) = &mut self.completion_state {
+                    cs.next();
+                }
+            }
+            // Shift+Tab / Up: previous item
+            (KeyCode::BackTab, _) | (KeyCode::Up, _) => {
+                if let Some(cs) = &mut self.completion_state {
+                    cs.prev();
+                }
+            }
+            // Enter: accept selection (do NOT submit query)
+            (KeyCode::Enter, _) => {
+                self.accept_completion();
+            }
+            // Escape: close without accepting
+            (KeyCode::Esc, _) => {
+                self.completion_state = None;
+            }
+            // Any other key: close popup and re-dispatch normally
+            _ => {
+                self.completion_state = None;
+                return Box::pin(self.handle_key(key)).await;
+            }
+        }
         false
     }
 
@@ -653,6 +772,19 @@ impl TuiApp {
             // Apply per-token syntax highlighting to the rendered textarea buffer
             let textarea_area = chunks[1];
             self.apply_textarea_highlights(f.buffer_mut(), textarea_area);
+
+            // Render completion popup if open
+            if let Some(cs) = &self.completion_state {
+                if !cs.is_empty() {
+                    let popup_rect = completion_popup::popup_area(
+                        cs,
+                        layout.input,
+                        chunks[1].x,
+                        area,
+                    );
+                    completion_popup::render(cs, popup_rect, f);
+                }
+            }
         }
 
         // Status bar

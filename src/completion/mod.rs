@@ -11,6 +11,17 @@ use schema_cache::SchemaCache;
 use usage_tracker::{ItemType, UsageTracker};
 use std::sync::Arc;
 
+/// A single completion candidate with display metadata.
+#[derive(Debug, Clone)]
+pub struct CompletionItem {
+    /// The text to insert when accepted.
+    pub value: String,
+    /// Short description shown in the popup (type label or schema name).
+    pub description: String,
+    /// The logical type of the item.
+    pub item_type: ItemType,
+}
+
 pub struct SqlCompleter {
     cache: Arc<SchemaCache>,
     usage_tracker: Arc<UsageTracker>,
@@ -42,11 +53,11 @@ impl SqlCompleter {
     }
 
     /// Return a list of completion candidates for the given input line and cursor position.
-    /// Returns `(word_start, candidates)` where `word_start` is the byte offset of the
-    /// start of the word being completed and `candidates` are the replacement strings.
-    pub fn complete_at(&self, line: &str, pos: usize) -> (usize, Vec<String>) {
+    /// Returns `(word_start, items)` where `word_start` is the byte offset of the
+    /// start of the word being completed.
+    pub fn complete_at(&self, line: &str, pos: usize) -> (usize, Vec<CompletionItem>) {
         if !self.enabled {
-            return (0, Vec::new());
+            return (0, Vec::<CompletionItem>::new());
         }
 
         // Find the start of the word we're completing
@@ -189,12 +200,24 @@ impl SqlCompleter {
         // Sort by score descending
         scored.sort_by(|a, b| b.score.cmp(&a.score));
 
-        // Deduplicate (keep highest-scored occurrence)
+        // Deduplicate (keep highest-scored occurrence), then convert to CompletionItem
         let mut seen = std::collections::HashSet::new();
-        let candidates: Vec<String> = scored
+        let candidates: Vec<CompletionItem> = scored
             .into_iter()
             .filter(|s| seen.insert(s.name.clone()))
-            .map(|s| s.name)
+            .map(|s| {
+                let description = match s.item_type {
+                    ItemType::Table => "table",
+                    ItemType::Column => "column",
+                    ItemType::Function => "function",
+                }
+                .to_string();
+                CompletionItem {
+                    value: s.name,
+                    description,
+                    item_type: s.item_type,
+                }
+            })
             .collect();
 
         (word_start, candidates)
@@ -224,6 +247,6 @@ mod tests {
         let (_, candidates) = completer.complete_at("SEL", 3);
 
         // Should not return keywords (only tables and columns from schema cache)
-        assert!(!candidates.iter().any(|c| c == "SELECT"));
+        assert!(!candidates.iter().any(|c| c.value == "SELECT"));
     }
 }
