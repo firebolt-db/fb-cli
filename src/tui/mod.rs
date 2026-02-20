@@ -44,6 +44,18 @@ use output_pane::OutputPane;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn format_with_commas(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 pub struct TuiApp {
     context: Context,
     textarea: TextArea<'static>,
@@ -59,6 +71,7 @@ pub struct TuiApp {
     query_start: Option<Instant>,
     spinner_tick: u64,
     running_hint: String, // e.g. "Showing first N rows — collecting remainder..."
+    progress_rows: u64,   // rows received so far (streamed from query task)
 
     /// Active Ctrl+R reverse-search session; `None` when not searching.
     history_search: Option<HistorySearch>,
@@ -97,6 +110,7 @@ impl TuiApp {
             query_start: None,
             spinner_tick: 0,
             running_hint: String::new(),
+            progress_rows: 0,
             history_search: None,
             needs_clear: false,
             should_quit: false,
@@ -200,6 +214,9 @@ impl TuiApp {
 
         loop {
             match rx.try_recv() {
+                Ok(TuiMsg::Progress(n)) => {
+                    self.progress_rows = n;
+                }
                 Ok(TuiMsg::StyledLines(lines)) => {
                     self.output.push_tui_lines(lines);
                 }
@@ -542,6 +559,7 @@ impl TuiApp {
         self.cancel_token = Some(cancel_token.clone());
         self.is_running = true;
         self.running_hint.clear();
+        self.progress_rows = 0;
         self.query_start = Some(Instant::now());
 
         // Build a context clone with the TUI output channel attached
@@ -640,7 +658,16 @@ impl TuiApp {
 
         let spinner = SPINNER_FRAMES[(self.spinner_tick / 2) as usize % SPINNER_FRAMES.len()];
         let elapsed = if let Some(start) = self.query_start {
-            format!("{} {:.1}s", spinner, start.elapsed().as_secs_f64())
+            if self.progress_rows > 0 {
+                format!(
+                    "{} {:.1}s  {:>} rows received",
+                    spinner,
+                    start.elapsed().as_secs_f64(),
+                    format_with_commas(self.progress_rows),
+                )
+            } else {
+                format!("{} {:.1}s", spinner, start.elapsed().as_secs_f64())
+            }
         } else {
             spinner.to_string()
         };

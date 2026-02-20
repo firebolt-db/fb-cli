@@ -472,6 +472,12 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                                         }
                                                         all_rows.push(row);
                                                     }
+                                                    // Send live row count to the TUI running pane.
+                                                    if context.is_tui() {
+                                                        if let Some(tx) = &context.tui_output_tx {
+                                                            let _ = tx.send(crate::tui_msg::TuiMsg::Progress(all_rows.len() as u64));
+                                                        }
+                                                    }
                                                 }
                                                 JsonLineMessage::FinishSuccessfully { statistics: s } => {
                                                     statistics = s;

@@ -4,6 +4,8 @@ pub enum TuiMsg {
     Line(String),
     /// Pre-styled lines produced by the custom TUI table renderer.
     StyledLines(Vec<TuiLine>),
+    /// Streaming progress update: total data rows received so far.
+    Progress(u64),
 }
 
 /// A single rendered line made up of zero or more styled spans.
