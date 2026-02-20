@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyboardEnhancementFlags,
-        KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+        KeyboardEnhancementFlags, KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -113,6 +114,9 @@ pub struct TuiApp {
     /// Active Ctrl+Space fuzzy search session; `None` when closed.
     fuzzy_state: Option<FuzzyState>,
 
+    /// Whether the Ctrl+H help overlay is visible (shown while key is held).
+    help_visible: bool,
+
     /// Active Ctrl+R reverse-search session; `None` when not searching.
     history_search: Option<HistorySearch>,
 
@@ -170,6 +174,7 @@ impl TuiApp {
             pending_schema_refresh: false,
             completion_state: None,
             fuzzy_state: None,
+            help_visible: false,
             history_search: None,
             needs_clear: false,
             should_quit: false,
@@ -198,7 +203,10 @@ impl TuiApp {
         // Silently ignore on terminals that don't support it.
         let _ = execute!(
             stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+            )
         );
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
@@ -344,6 +352,19 @@ impl TuiApp {
 
     /// Returns `true` when the app should exit.
     async fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // ── Ctrl+H help overlay (hold-to-show) ───────────────────────────────
+        // Handled before everything else so it works during queries too.
+        let is_ctrl_h = key.code == KeyCode::Char('h')
+            && key.modifiers.contains(KeyModifiers::CONTROL);
+        if is_ctrl_h {
+            self.help_visible = key.kind != KeyEventKind::Release;
+            return false;
+        }
+        // Any other key press dismisses the help overlay.
+        if self.help_visible && key.kind == KeyEventKind::Press {
+            self.help_visible = false;
+        }
+
         // While a query is running only Ctrl+C is accepted (to cancel)
         if self.is_running {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1055,7 +1076,10 @@ impl TuiApp {
         let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
         let _ = execute!(
             terminal.backend_mut(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+            )
         );
         let _ = enable_raw_mode();
         let _ = std::io::Write::flush(terminal.backend_mut());
@@ -1294,6 +1318,11 @@ impl TuiApp {
             }
         }
 
+        // Ctrl+H help overlay (topmost — rendered above all other content)
+        if self.help_visible {
+            self.render_help_popup(f, area);
+        }
+
         // Status bar
         self.render_status_bar(f, layout.status);
     }
@@ -1419,6 +1448,62 @@ impl TuiApp {
         f.render_widget(Paragraph::new(vec![query_line, matched_line]), inner);
     }
 
+    fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {
+        use ratatui::{
+            layout::Margin,
+            widgets::{Block, Borders, Clear, Paragraph, Wrap},
+        };
+
+        const HELP: &str = "\
+Keyboard shortcuts
+──────────────────
+Ctrl+D          Exit
+Ctrl+C          Cancel input / cancel running query
+Ctrl+V          Open last result in csvlens viewer
+Ctrl+R          Reverse history search
+Ctrl+Space      Fuzzy schema search
+Tab             Open / navigate completion popup
+Shift+Tab       Navigate completion popup backwards
+Alt+F           Format SQL (uppercase keywords, 2-space indent)
+Page Up/Down    Scroll output pane
+Ctrl+Up/Down    Cycle through history
+
+Special commands
+────────────────
+\\help           Show this help
+\\set k=v        Set a query parameter
+\\unset k        Remove a query parameter
+\\benchmark [N]  Run query N times (default 3) and report timings
+\\export <file>  Export last result to CSV/JSON/TSV";
+
+        let lines: Vec<ratatui::text::Line> = HELP
+            .lines()
+            .map(|l| ratatui::text::Line::from(l.to_string()))
+            .collect();
+        let content_h = lines.len() as u16 + 2; // +2 for borders
+        let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(40) as u16 + 4;
+
+        let popup_w = content_w.min(area.width.saturating_sub(4));
+        let popup_h = content_h.min(area.height.saturating_sub(4));
+        let x = area.x + area.width.saturating_sub(popup_w) / 2;
+        let y = area.y + area.height.saturating_sub(popup_h) / 2;
+        let popup_rect = Rect::new(x, y, popup_w, popup_h);
+
+        f.render_widget(Clear, popup_rect);
+        let block = Block::default()
+            .title(" Help — release Ctrl+H to close ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(popup_rect);
+        f.render_widget(block, popup_rect);
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .style(Style::default()),
+            inner,
+        );
+    }
+
     fn render_status_bar(&mut self, f: &mut ratatui::Frame, area: Rect) {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
@@ -1441,7 +1526,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete  Alt+F format ".to_string()
+            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete  Alt+F format  Ctrl+H help ".to_string()
         };
 
         let total = area.width as usize;
