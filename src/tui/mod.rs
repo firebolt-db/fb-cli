@@ -581,9 +581,10 @@ impl TuiApp {
             + cursor_col;
         // current line up to cursor for completion
         let line_to_cursor = &lines[cursor_row][..cursor_col];
+        let full_sql = lines.join("\n");
 
         let (word_start_byte_in_line, items) =
-            self.completer.complete_at(line_to_cursor, cursor_col);
+            self.completer.complete_at(line_to_cursor, cursor_col, &full_sql);
 
         if items.is_empty() {
             return;

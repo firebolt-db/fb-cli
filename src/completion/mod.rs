@@ -56,9 +56,15 @@ impl SqlCompleter {
     }
 
     /// Return a list of completion candidates for the given input line and cursor position.
+    ///
+    /// `line`     — the current line up to the cursor (used for word boundary detection).
+    /// `pos`      — cursor byte offset within `line`.
+    /// `full_sql` — the entire textarea content joined with `\n`; used for table context
+    ///              extraction so tables on other lines are visible to the completer.
+    ///
     /// Returns `(word_start, items)` where `word_start` is the byte offset of the
     /// start of the word being completed.
-    pub fn complete_at(&self, line: &str, pos: usize) -> (usize, Vec<CompletionItem>) {
+    pub fn complete_at(&self, line: &str, pos: usize, full_sql: &str) -> (usize, Vec<CompletionItem>) {
         if !self.enabled {
             return (0, Vec::<CompletionItem>::new());
         }
@@ -67,8 +73,8 @@ impl SqlCompleter {
         let word_start = find_word_start(line, pos);
         let partial = &line[word_start..pos];
 
-        // Extract context: tables mentioned in current statement
-        let tables_in_line = ContextAnalyzer::extract_tables(line);
+        // Extract context from the full SQL so tables on other lines are visible.
+        let tables_in_line = ContextAnalyzer::extract_tables(full_sql);
 
         // ── Dot-mode: partial already contains a dot ──────────────────────────
         //
@@ -238,7 +244,7 @@ mod tests {
         let usage_tracker = Arc::new(UsageTracker::new(10));
         let completer = SqlCompleter::new(cache, usage_tracker, false);
 
-        let (_, candidates) = completer.complete_at("SELECT * FROM us", 17);
+        let (_, candidates) = completer.complete_at("SELECT * FROM us", 17, "SELECT * FROM us");
         assert_eq!(candidates.len(), 0);
     }
 
@@ -248,7 +254,7 @@ mod tests {
         let usage_tracker = Arc::new(UsageTracker::new(10));
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
-        let (_, candidates) = completer.complete_at("SEL", 3);
+        let (_, candidates) = completer.complete_at("SEL", 3, "SEL");
 
         // Should not return keywords (only tables and columns from schema cache)
         assert!(!candidates.iter().any(|c| c.value == "SELECT"));
@@ -284,7 +290,7 @@ mod tests {
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
         // SQL references "orders" but NOT "users"
-        let (_, cands) = completer.complete_at("SELECT ord FROM orders", 10);
+        let (_, cands) = completer.complete_at("SELECT ord FROM orders", 10, "SELECT ord FROM orders");
 
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(
@@ -321,7 +327,7 @@ mod tests {
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
         // Empty partial after the table reference
-        let (_, cands) = completer.complete_at("SELECT  FROM users", 7);
+        let (_, cands) = completer.complete_at("SELECT  FROM users", 7, "SELECT  FROM users");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(values.iter().any(|v| v.contains("user_id")));
         assert!(values.iter().any(|v| v.contains("username")));
@@ -351,7 +357,7 @@ mod tests {
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
         // SQL does not mention "analytics" schema
-        let (_, cands) = completer.complete_at("SELECT  FROM orders", 7);
+        let (_, cands) = completer.complete_at("SELECT  FROM orders", 7, "SELECT  FROM orders");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(
             !values.iter().any(|v| v.contains("analytics")),
@@ -379,7 +385,7 @@ mod tests {
 
         // SQL already references analytics.events
         let (_, cands) =
-            completer.complete_at("SELECT  FROM analytics.events", 7);
+            completer.complete_at("SELECT  FROM analytics.events", 7, "SELECT  FROM analytics.events");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("analytics.events")),
@@ -402,7 +408,7 @@ mod tests {
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
         // User typed "analytics" (the schema name) in the no-schema-in-sql case
-        let (_, cands) = completer.complete_at("SELECT analytics FROM", 16);
+        let (_, cands) = completer.complete_at("SELECT analytics FROM", 16, "SELECT analytics FROM");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("analytics")),
@@ -435,7 +441,7 @@ mod tests {
         let usage_tracker = Arc::new(UsageTracker::new(10));
         let completer = SqlCompleter::new(cache, usage_tracker, true);
 
-        let (_, cands) = completer.complete_at("SELECT test. FROM test", 12);
+        let (_, cands) = completer.complete_at("SELECT test. FROM test", 12, "SELECT test. FROM test");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(values.iter().any(|v| v.contains("val")));
         assert!(values.iter().any(|v| v.contains("name")));
@@ -460,7 +466,7 @@ mod tests {
 
         // Table referenced as "information_schema.engine_query_history"
         let (_, cands) = completer
-            .complete_at("SELECT  FROM information_schema.engine_query_history", 7);
+            .complete_at("SELECT  FROM information_schema.engine_query_history", 7, "SELECT  FROM information_schema.engine_query_history");
         let values: Vec<&str> = cands.iter().map(|c| c.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("start_time")),
