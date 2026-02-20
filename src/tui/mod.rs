@@ -47,6 +47,28 @@ use output_pane::OutputPane;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Parse `\benchmark [N] <query>` arguments.
+/// Returns `(n_runs, query_text)` where `n_runs` defaults to 3.
+fn parse_benchmark_args(cmd: &str) -> (usize, String) {
+    let rest = cmd
+        .strip_prefix("\\benchmark")
+        .unwrap_or(cmd)
+        .trim()
+        .to_string();
+
+    // Try to parse an optional numeric run count at the start
+    let mut chars = rest.splitn(2, |c: char| c.is_whitespace());
+    if let Some(first) = chars.next() {
+        if let Ok(n) = first.parse::<usize>() {
+            let query = chars.next().unwrap_or("").trim().to_string();
+            return (n.max(1), query);
+        }
+    }
+
+    // No number — entire rest is the query, default 3 runs
+    (3, rest)
+}
+
 fn format_with_commas(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
@@ -590,6 +612,14 @@ impl TuiApp {
     // ── Backslash commands ───────────────────────────────────────────────────
 
     async fn handle_backslash_command(&mut self, cmd: &str) {
+        // Dispatch \benchmark separately since it needs async query execution
+        if cmd.starts_with("\\benchmark") {
+            self.history.add(cmd.to_string());
+            let (n_runs, query_text) = parse_benchmark_args(cmd);
+            self.do_benchmark(n_runs, query_text).await;
+            return;
+        }
+
         match cmd {
             "\\view" => self.open_viewer(),
             "\\refresh" | "\\refresh_cache" => self.do_refresh(),
@@ -605,6 +635,107 @@ impl TuiApp {
                 self.history.add(cmd.to_string());
             }
         }
+    }
+
+    // ── Benchmark ────────────────────────────────────────────────────────────
+
+    /// Run `query_text` N+1 times (1 warmup), collect per-run elapsed times,
+    /// and display min/avg/p90/max statistics in the output pane.
+    async fn do_benchmark(&mut self, n_runs: usize, query_text: String) {
+        if query_text.trim().is_empty() {
+            self.output.push_line(
+                "Usage: \\benchmark [N] <query>  (default N=3, first run is warmup)",
+            );
+            return;
+        }
+
+        let total = n_runs + 1; // 1 warmup + N timed
+        self.output.push_line(format!(
+            "Benchmarking ({} warmup + {} timed run{}):",
+            1,
+            n_runs,
+            if n_runs == 1 { "" } else { "s" }
+        ));
+        self.output.push_prompt(format!("❯ {}", query_text.trim()));
+
+        let mut times_ms: Vec<f64> = Vec::with_capacity(n_runs);
+
+        for i in 0..total {
+            let queries = match crate::query::try_split_queries(query_text.trim()) {
+                Some(q) => q,
+                None => {
+                    self.output.push_line("Error: could not parse query");
+                    return;
+                }
+            };
+
+            // Silence all output during benchmark runs
+            let (tx, mut rx) = mpsc::unbounded_channel::<TuiMsg>();
+            let mut ctx = self.context.clone();
+            ctx.tui_output_tx = Some(tx);
+
+            let start = Instant::now();
+            let handle = tokio::spawn(async move {
+                for q in queries {
+                    if crate::query::query(&mut ctx, q).await.is_err() {
+                        return false;
+                    }
+                }
+                true
+            });
+
+            // Drain messages (discard) while the query runs
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => {
+                        if msg.is_none() { break; }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        // Continue draining
+                    }
+                }
+                // Stop when the handle has completed
+                if handle.is_finished() {
+                    // Drain remaining
+                    while rx.try_recv().is_ok() {}
+                    break;
+                }
+            }
+
+            let ok = handle.await.unwrap_or(false);
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+            if !ok {
+                self.output.push_line("Error: query failed during benchmark");
+                return;
+            }
+
+            if i == 0 {
+                self.output.push_line(format!("  warmup: {:.1}ms", elapsed));
+            } else {
+                self.output.push_line(format!("  run {}: {:.1}ms", i, elapsed));
+                times_ms.push(elapsed);
+            }
+        }
+
+        if times_ms.is_empty() {
+            return;
+        }
+
+        // Compute statistics
+        let min = times_ms.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = times_ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let avg = times_ms.iter().sum::<f64>() / times_ms.len() as f64;
+
+        let mut sorted = times_ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p90_idx = (sorted.len() as f64 * 0.9).ceil() as usize;
+        let p90 = sorted[p90_idx.saturating_sub(1).min(sorted.len() - 1)];
+
+        self.output.push_line(format!(
+            "Results: min={:.1}ms  avg={:.1}ms  p90={:.1}ms  max={:.1}ms",
+            min, avg, p90, max
+        ));
     }
 
     fn open_viewer(&mut self) {
@@ -933,5 +1064,46 @@ impl TuiApp {
         let status = Paragraph::new(status_text)
             .style(Style::default().bg(Color::DarkGray).fg(Color::White));
         f.render_widget(status, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_benchmark_args_default() {
+        let (n, q) = parse_benchmark_args("\\benchmark SELECT 1");
+        assert_eq!(n, 3);
+        assert_eq!(q, "SELECT 1");
+    }
+
+    #[test]
+    fn test_parse_benchmark_args_explicit_n() {
+        let (n, q) = parse_benchmark_args("\\benchmark 5 SELECT 1");
+        assert_eq!(n, 5);
+        assert_eq!(q, "SELECT 1");
+    }
+
+    #[test]
+    fn test_parse_benchmark_args_no_query() {
+        let (n, q) = parse_benchmark_args("\\benchmark");
+        assert_eq!(n, 3);
+        assert_eq!(q, "");
+    }
+
+    #[test]
+    fn test_parse_benchmark_args_min_n() {
+        // 0 should be clamped to 1
+        let (n, _) = parse_benchmark_args("\\benchmark 0 SELECT 1");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn test_format_with_commas() {
+        assert_eq!(format_with_commas(0), "0");
+        assert_eq!(format_with_commas(999), "999");
+        assert_eq!(format_with_commas(1000), "1,000");
+        assert_eq!(format_with_commas(1234567), "1,234,567");
     }
 }
