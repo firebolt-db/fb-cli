@@ -1348,7 +1348,7 @@ impl TuiApp {
                 // Borrow separately to avoid simultaneous &self + &mut self
                 let hs = self.history_search.as_ref().unwrap();
                 let entries: Vec<String> = self.history.entries().to_vec();
-                Self::render_history_search_popup(f, popup_rect, hs, &entries);
+                Self::render_history_search_popup(f, popup_rect, hs, &entries, &self.highlighter);
             }
         }
 
@@ -1470,6 +1470,7 @@ impl TuiApp {
         area: Rect,
         hs: &HistorySearch,
         entries: &[String],
+        highlighter: &SqlHighlighter,
     ) {
         use ratatui::{
             style::Modifier,
@@ -1529,15 +1530,46 @@ impl TuiApp {
             let is_sel = *idx == hs.selected();
             let entry = &entries[*entry_idx];
             let display = history_search::format_entry_oneline(entry, list_w.saturating_sub(1));
-            let style = if is_sel {
-                Style::default()
+
+            let line = if is_sel {
+                // Selected row: solid cyan background, no syntax colours
+                let sel_style = Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD);
+                Line::from(Span::styled(display, sel_style))
             } else {
-                Style::default().fg(Color::White)
+                // Normal row: apply SQL syntax highlighting to the display text
+                let spans_meta = highlighter.highlight_to_spans(&display);
+                if spans_meta.is_empty() {
+                    Line::from(Span::styled(display, Style::default().fg(Color::White)))
+                } else {
+                    let mut parts: Vec<Span> = Vec::new();
+                    let mut last = 0usize;
+                    for (range, style) in &spans_meta {
+                        let s = range.start.min(display.len());
+                        let e = range.end.min(display.len());
+                        if s > last {
+                            parts.push(Span::styled(
+                                display[last..s].to_string(),
+                                Style::default().fg(Color::White),
+                            ));
+                        }
+                        if s < e {
+                            parts.push(Span::styled(display[s..e].to_string(), *style));
+                        }
+                        last = e;
+                    }
+                    if last < display.len() {
+                        parts.push(Span::styled(
+                            display[last..].to_string(),
+                            Style::default().fg(Color::White),
+                        ));
+                    }
+                    Line::from(parts)
+                }
             };
-            items.push(ListItem::new(Line::from(Span::styled(display, style))));
+            items.push(ListItem::new(line));
         }
 
         f.render_widget(List::new(items), chunks[0]);
