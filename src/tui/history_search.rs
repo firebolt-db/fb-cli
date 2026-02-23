@@ -63,15 +63,16 @@ impl HistorySearch {
     fn recompute(&mut self, entries: &[String]) {
         let q = self.query.to_lowercase();
         let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut last_matched = "";
         for i in (0..entries.len()).rev() {
             let entry = entries[i].as_str();
-            // Keep only the most-recent occurrence of each unique query.
-            if !seen.insert(entry) {
-                continue;
-            }
             if q.is_empty() || entry.to_lowercase().contains(&q) {
-                result.push(i);
+                // Skip only if identical to the previous entry that also matched —
+                // i.e. consecutive duplicates within the filtered result list.
+                if entry != last_matched {
+                    result.push(i);
+                }
+                last_matched = entry;
             }
         }
         self.all_matches = result;
@@ -243,16 +244,24 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicates_removed() {
+    fn test_consecutive_duplicates_in_results() {
         let e = vec![
             "SELECT 1;".to_string(),
             "SELECT 2;".to_string(),
-            "SELECT 2;".to_string(),
-            "SELECT 2;".to_string(),
-            "SELECT 1;".to_string(),
+            "SELECT 2;".to_string(), // consecutive with above → collapsed
+            "SELECT 2;".to_string(), // consecutive → collapsed
+            "SELECT 1;".to_string(), // not consecutive with SELECT 1 at index 0
+                                     // because SELECT 2 entries are between them
         ];
+        // No filter: result list is SELECT 1, SELECT 2, SELECT 2, SELECT 2, SELECT 1
+        // (most-recent-first). After consecutive dedup in results: SELECT 1, SELECT 2, SELECT 1
         let s = HistorySearch::new(String::new(), &e);
-        // Only 2 unique queries; most-recent occurrence of each is kept.
-        assert_eq!(s.all_matches().len(), 2);
+        assert_eq!(s.all_matches().len(), 3);
+
+        // Filter "2": only SELECT 2 entries match → all three are consecutive in
+        // the result list → collapsed to one.
+        let mut s2 = HistorySearch::new(String::new(), &e);
+        s2.push_char('2', &e);
+        assert_eq!(s2.all_matches().len(), 1);
     }
 }
