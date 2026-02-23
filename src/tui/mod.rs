@@ -541,10 +541,22 @@ impl TuiApp {
         let entries = self.history.entries().to_vec();
 
         match (key.code, key.modifiers) {
-            // Ctrl+R: cycle to next older match
+            // Ctrl+R or Down: cycle to next older match
             (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
                 if let Some(hs) = &mut self.history_search {
                     hs.search_older(&entries);
+                }
+            }
+            (KeyCode::Down, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.select_next();
+                }
+            }
+
+            // Up: cycle to next newer match
+            (KeyCode::Up, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.select_prev();
                 }
             }
 
@@ -1270,8 +1282,6 @@ impl TuiApp {
 
         if self.is_running {
             self.render_running_pane(f, layout.input);
-        } else if let Some(hs) = &self.history_search {
-            self.render_history_search_pane(f, layout.input, hs);
         } else {
             // Input area: outer block provides top + bottom separator lines
             let outer_block = Block::default()
@@ -1295,17 +1305,36 @@ impl TuiApp {
             let textarea_area = chunks[1];
             self.apply_textarea_highlights(f.buffer_mut(), textarea_area);
 
-            // Render completion popup if open
-            if let Some(cs) = &self.completion_state {
-                if !cs.is_empty() {
-                    let popup_rect = completion_popup::popup_area(
-                        cs,
-                        layout.input,
-                        chunks[1].x,
-                        area,
-                    );
-                    completion_popup::render(cs, popup_rect, f);
+            // Render completion popup if open (not during history search)
+            if self.history_search.is_none() {
+                if let Some(cs) = &self.completion_state {
+                    if !cs.is_empty() {
+                        let popup_rect = completion_popup::popup_area(
+                            cs,
+                            layout.input,
+                            chunks[1].x,
+                            area,
+                        );
+                        completion_popup::render(cs, popup_rect, f);
+                    }
                 }
+            }
+        }
+
+        // History search popup (above input area, like fuzzy popup)
+        if self.history_search.is_some() {
+            let popup_h = (history_search::MAX_VISIBLE as u16 + 4).min(layout.input.y);
+            if popup_h > 2 {
+                let popup_rect = Rect::new(
+                    0,
+                    layout.input.y.saturating_sub(popup_h),
+                    area.width,
+                    popup_h,
+                );
+                // Borrow separately to avoid simultaneous &self + &mut self
+                let hs = self.history_search.as_ref().unwrap();
+                let entries: Vec<String> = self.history.entries().to_vec();
+                Self::render_history_search_popup(f, popup_rect, hs, &entries);
             }
         }
 
@@ -1422,29 +1451,71 @@ impl TuiApp {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_history_search_pane(&self, f: &mut ratatui::Frame, area: Rect, hs: &HistorySearch) {
-        let outer_block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
+    fn render_history_search_popup(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        hs: &HistorySearch,
+        entries: &[String],
+    ) {
+        use ratatui::{
+            style::Modifier,
+            widgets::{Clear, List, ListItem},
+        };
+
+        f.render_widget(Clear, area);
+
+        let block = Block::default()
+            .title(" History Search  (Enter accept · ↑/↓ navigate · Ctrl+R older · Esc close) ")
+            .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
-        let inner = outer_block.inner(area);
-        f.render_widget(outer_block, area);
 
-        let entries = self.history.entries();
-        let matched = hs.matched(entries).unwrap_or("");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-        // First line: "(reverse-i-search)`query':"
-        let query_line = Line::from(vec![
-            Span::styled("(reverse-i-search)`", Style::default().fg(Color::DarkGray)),
-            Span::styled(hs.query().to_string(), Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD)),
-            Span::styled("':", Style::default().fg(Color::DarkGray)),
+        // Split: search input line at top, match list below
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+        // Search line with blinking-block cursor indicator
+        let search_line = Line::from(vec![
+            Span::styled("/ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(hs.query().to_string(), Style::default().fg(Color::White)),
+            Span::styled("█", Style::default().fg(Color::Cyan)),
         ]);
+        f.render_widget(Paragraph::new(search_line), chunks[0]);
 
-        // Second line: the matched entry (truncated to fit)
-        let width = inner.width as usize;
-        let display: String = matched.chars().take(width).collect();
-        let matched_line = Line::from(Span::styled(display, Style::default().fg(Color::Yellow)));
+        // Match list
+        let list_h = chunks[1].height as usize;
+        let list_w = chunks[1].width as usize;
 
-        f.render_widget(Paragraph::new(vec![query_line, matched_line]), inner);
+        let items: Vec<ListItem> = hs
+            .all_matches()
+            .iter()
+            .enumerate()
+            .skip(hs.scroll_offset())
+            .take(list_h)
+            .map(|(idx, &entry_idx)| {
+                let is_sel = idx == hs.selected();
+                let entry = &entries[entry_idx];
+                // Show only the first line, truncated
+                let first_line = entry.lines().next().unwrap_or(entry.as_str());
+                let truncated: String = first_line.chars().take(list_w.saturating_sub(1)).collect();
+                let style = if is_sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Line::from(Span::styled(truncated, style)))
+            })
+            .collect();
+
+        f.render_widget(List::new(items), chunks[1]);
     }
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {
