@@ -63,15 +63,13 @@ impl HistorySearch {
     fn recompute(&mut self, entries: &[String]) {
         let q = self.query.to_lowercase();
         let mut result = Vec::new();
-        let mut last_seen = "";
+        let mut seen = std::collections::HashSet::new();
         for i in (0..entries.len()).rev() {
             let entry = entries[i].as_str();
-            // Skip entries that are identical to the one immediately after them
-            // in chronological order (consecutive duplicates in history).
-            if entry == last_seen {
+            // Keep only the most-recent occurrence of each unique query.
+            if !seen.insert(entry) {
                 continue;
             }
-            last_seen = entry;
             if q.is_empty() || entry.to_lowercase().contains(&q) {
                 result.push(i);
             }
@@ -245,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_consecutive_duplicates_removed() {
+    fn test_duplicates_removed() {
         let e = vec![
             "SELECT 1;".to_string(),
             "SELECT 2;".to_string(),
@@ -254,8 +252,7 @@ mod tests {
             "SELECT 1;".to_string(),
         ];
         let s = HistorySearch::new(String::new(), &e);
-        // "SELECT 2;" runs 3× consecutively → shown once; "SELECT 1;" at both
-        // ends is not consecutive with SELECT 2 → shown twice.
-        assert_eq!(s.all_matches().len(), 3);
+        // Only 2 unique queries; most-recent occurrence of each is kept.
+        assert_eq!(s.all_matches().len(), 2);
     }
 }
