@@ -1,31 +1,35 @@
 /// Incremental reverse-history-search state (Ctrl+R).
 ///
-/// Tracks all matching history entries for the current query so the popup
-/// can display a navigable list.
-pub const MAX_VISIBLE: usize = 12;
+/// Displayed as a bottom-up popup: the search box is at the bottom and
+/// matches are listed above it with the most-recent entry at the bottom.
+pub const MAX_VISIBLE: usize = 16;
 
 pub struct HistorySearch {
     /// The characters the user has typed so far.
     query: String,
     /// Indices into `History::entries` of all matching entries, most-recent-first.
     all_matches: Vec<usize>,
-    /// Which match is currently highlighted (index into `all_matches`).
+    /// Which match is currently highlighted (index into `all_matches`, 0 = most recent).
     selected: usize,
-    /// First visible row in the popup list.
+    /// Scroll offset: index of the entry shown at the bottom of the visible window.
     scroll_offset: usize,
     /// Text that was in the textarea when search began; restored on Escape.
     saved_content: String,
 }
 
 impl HistorySearch {
-    pub fn new(saved_content: String) -> Self {
-        Self {
+    /// Create a new search session.  Immediately populates all matches so that
+    /// the popup shows recent history before the user types anything.
+    pub fn new(saved_content: String, entries: &[String]) -> Self {
+        let mut s = Self {
             query: String::new(),
             all_matches: Vec::new(),
             selected: 0,
             scroll_offset: 0,
             saved_content,
-        }
+        };
+        s.recompute(entries);
+        s
     }
 
     pub fn query(&self) -> &str {
@@ -66,11 +70,13 @@ impl HistorySearch {
         self.scroll_offset = 0;
     }
 
-    fn ensure_visible(&mut self) {
+    /// Keep `selected` within the visible scroll window.
+    fn ensure_visible(&mut self, visible_rows: usize) {
+        let h = visible_rows.max(1);
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
-        } else if self.selected >= self.scroll_offset + MAX_VISIBLE {
-            self.scroll_offset = self.selected - MAX_VISIBLE + 1;
+        } else if self.selected >= self.scroll_offset + h {
+            self.scroll_offset = self.selected - h + 1;
         }
     }
 
@@ -86,25 +92,54 @@ impl HistorySearch {
         self.recompute(entries);
     }
 
-    /// Move selection to the next older match.
-    pub fn select_next(&mut self) {
+    /// Move selection to the next older match (Up arrow / Ctrl+R).
+    /// `visible_rows` is the height of the list area for scroll tracking.
+    pub fn select_older(&mut self, visible_rows: usize) {
         if self.selected + 1 < self.all_matches.len() {
             self.selected += 1;
-            self.ensure_visible();
+            self.ensure_visible(visible_rows);
         }
     }
 
-    /// Move selection to the next newer match.
-    pub fn select_prev(&mut self) {
+    /// Move selection to the next newer match (Down arrow).
+    pub fn select_newer(&mut self, visible_rows: usize) {
         if self.selected > 0 {
             self.selected -= 1;
-            self.ensure_visible();
+            self.ensure_visible(visible_rows);
         }
     }
 
-    /// Alias used by Ctrl+R (cycles to next older match).
-    pub fn search_older(&mut self, _entries: &[String]) {
-        self.select_next();
+    /// Alias for Ctrl+R (cycles to next older match).
+    pub fn search_older(&mut self, _entries: &[String], visible_rows: usize) {
+        self.select_older(visible_rows);
+    }
+}
+
+/// Format a (possibly multi-line) history entry for single-line display.
+/// Newlines are replaced with `↵` and the result is truncated with `(...)`.
+pub fn format_entry_oneline(entry: &str, max_chars: usize) -> String {
+    // Join lines with ↵ separator
+    let joined: String = {
+        let mut parts = entry.lines();
+        let first = parts.next().unwrap_or("").trim_end();
+        let mut s = first.to_string();
+        for part in parts {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() {
+                s.push_str(" ↵ ");
+                s.push_str(trimmed);
+            }
+        }
+        s
+    };
+
+    if joined.chars().count() <= max_chars {
+        joined
+    } else {
+        let suffix = " (...)";
+        let take = max_chars.saturating_sub(suffix.chars().count());
+        let truncated: String = joined.chars().take(take).collect();
+        format!("{}{}", truncated, suffix)
     }
 }
 
@@ -122,65 +157,79 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_query_no_match_at_start() {
-        let s = HistorySearch::new(String::new());
+    fn test_new_shows_all_entries() {
+        let s = HistorySearch::new(String::new(), &entries());
         let e = entries();
-        // Nothing typed → no match yet
-        assert!(s.matched(&e).is_none());
-    }
-
-    #[test]
-    fn test_empty_query_after_pop_matches_most_recent() {
-        let mut s = HistorySearch::new(String::new());
-        let e = entries();
-        s.push_char('x', &e);
-        s.pop_char(&e);
-        // Empty query → all entries match; most-recent (index 3 = INSERT) is first
+        // No query → all entries match; most-recent (INSERT) is first
+        assert_eq!(s.all_matches().len(), 4);
         assert_eq!(s.matched(&e), Some("INSERT INTO orders VALUES (1);"));
     }
 
     #[test]
     fn test_push_narrows_match() {
-        let mut s = HistorySearch::new(String::new());
+        let mut s = HistorySearch::new(String::new(), &entries());
         let e = entries();
         s.push_char('s', &e);
         s.push_char('e', &e);
         s.push_char('l', &e);
-        // Most recent "sel" match: "SELECT * FROM users;" (index 2 in entries)
+        assert_eq!(s.all_matches().len(), 3);
         assert_eq!(s.matched(&e), Some("SELECT * FROM users;"));
     }
 
     #[test]
-    fn test_ctrl_r_cycles_older() {
-        let mut s = HistorySearch::new(String::new());
+    fn test_select_older_cycles() {
+        let mut s = HistorySearch::new(String::new(), &entries());
         let e = entries();
         s.push_char('s', &e);
         s.push_char('e', &e);
         s.push_char('l', &e);
         assert_eq!(s.matched(&e), Some("SELECT * FROM users;"));
-        s.search_older(&e);
+        s.select_older(100);
         assert_eq!(s.matched(&e), Some("SELECT * FROM orders;"));
-        s.search_older(&e);
+        s.select_older(100);
         assert_eq!(s.matched(&e), Some("SELECT 1;"));
-        // Already at last match — stays there
-        s.search_older(&e);
+        // At last match — stays there
+        s.select_older(100);
         assert_eq!(s.matched(&e), Some("SELECT 1;"));
+    }
+
+    #[test]
+    fn test_select_newer() {
+        let mut s = HistorySearch::new(String::new(), &entries());
+        let e = entries();
+        s.push_char('s', &e);
+        s.push_char('e', &e);
+        s.push_char('l', &e);
+        s.select_older(100);
+        s.select_older(100);
+        assert_eq!(s.matched(&e), Some("SELECT 1;"));
+        s.select_newer(100);
+        assert_eq!(s.matched(&e), Some("SELECT * FROM orders;"));
     }
 
     #[test]
     fn test_saved_content() {
-        let s = HistorySearch::new("my draft query".to_string());
+        let s = HistorySearch::new("my draft query".to_string(), &[]);
         assert_eq!(s.saved_content(), "my draft query");
     }
 
     #[test]
-    fn test_all_matches_count() {
-        let mut s = HistorySearch::new(String::new());
-        let e = entries();
-        s.push_char('s', &e);
-        s.push_char('e', &e);
-        s.push_char('l', &e);
-        // "sel" matches 3 SELECT entries
-        assert_eq!(s.all_matches().len(), 3);
+    fn test_format_entry_oneline_single() {
+        assert_eq!(format_entry_oneline("SELECT 1;", 80), "SELECT 1;");
+    }
+
+    #[test]
+    fn test_format_entry_oneline_multiline() {
+        let s = format_entry_oneline("SELECT 1\nFROM t", 80);
+        assert!(s.contains("↵"));
+        assert!(s.contains("FROM t"));
+    }
+
+    #[test]
+    fn test_format_entry_oneline_truncate() {
+        let long = "SELECT very_long_column_name FROM some_table WHERE condition IS TRUE";
+        let result = format_entry_oneline(long, 20);
+        assert!(result.ends_with("(...)"));
+        assert!(result.chars().count() <= 20);
     }
 }

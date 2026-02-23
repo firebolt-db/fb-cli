@@ -402,7 +402,10 @@ impl TuiApp {
             // ── Ctrl+R: start reverse history search ─────────────────────
             (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
                 let saved = self.textarea.lines().join("\n");
-                self.history_search = Some(HistorySearch::new(saved));
+                let entries = self.history.entries().to_vec();
+                self.history_search = Some(HistorySearch::new(saved, &entries));
+                // Immediately preview the most recent match
+                self.preview_history_match(&entries);
             }
 
             // ── Cancel / clear ────────────────────────────────────────────
@@ -540,24 +543,30 @@ impl TuiApp {
     async fn handle_history_search_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         let entries = self.history.entries().to_vec();
 
+        // Compute the visible list height for scroll tracking (approximation)
+        let list_h = history_search::MAX_VISIBLE;
+
         match (key.code, key.modifiers) {
-            // Ctrl+R or Down: cycle to next older match
+            // Ctrl+R or Up arrow: cycle to next older match
             (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
                 if let Some(hs) = &mut self.history_search {
-                    hs.search_older(&entries);
+                    hs.search_older(&entries, list_h);
                 }
+                self.preview_history_match(&entries);
             }
-            (KeyCode::Down, _) => {
-                if let Some(hs) = &mut self.history_search {
-                    hs.select_next();
-                }
-            }
-
-            // Up: cycle to next newer match
             (KeyCode::Up, _) => {
                 if let Some(hs) = &mut self.history_search {
-                    hs.select_prev();
+                    hs.select_older(list_h);
                 }
+                self.preview_history_match(&entries);
+            }
+
+            // Down arrow: cycle to next newer match
+            (KeyCode::Down, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.select_newer(list_h);
+                }
+                self.preview_history_match(&entries);
             }
 
             // Escape or Ctrl+G: cancel, restore saved content
@@ -577,16 +586,10 @@ impl TuiApp {
                 self.reset_textarea();
             }
 
-            // Enter: accept the current match
+            // Enter: accept — textarea already shows the preview
             (KeyCode::Enter, _) => {
-                let matched = self
-                    .history_search
-                    .as_ref()
-                    .and_then(|hs| hs.matched(&entries))
-                    .map(|s| s.to_string());
                 self.history_search = None;
-                let content = matched.unwrap_or_default();
-                self.set_textarea_content(&content);
+                // textarea already has the previewed content; nothing else to do
             }
 
             // Backspace: remove one character from the query
@@ -594,6 +597,7 @@ impl TuiApp {
                 if let Some(hs) = &mut self.history_search {
                     hs.pop_char(&entries);
                 }
+                self.preview_history_match(&entries);
             }
 
             // Printable character: append to search query
@@ -601,25 +605,35 @@ impl TuiApp {
                 if let Some(hs) = &mut self.history_search {
                     hs.push_char(c, &entries);
                 }
+                self.preview_history_match(&entries);
             }
 
             // Any other key: accept match, exit search, re-process key normally
             _ => {
-                let matched = self
-                    .history_search
-                    .as_ref()
-                    .and_then(|hs| hs.matched(&entries))
-                    .map(|s| s.to_string());
                 self.history_search = None;
-                if let Some(content) = matched {
-                    self.set_textarea_content(&content);
-                }
-                // Re-dispatch to normal handler
+                // textarea already has the previewed content
                 return Box::pin(self.handle_key(key)).await;
             }
         }
 
         false
+    }
+
+    /// Update the textarea to show a preview of the currently selected history match.
+    /// On no match, restores the saved content.
+    fn preview_history_match(&mut self, entries: &[String]) {
+        let content = self
+            .history_search
+            .as_ref()
+            .and_then(|hs| hs.matched(entries))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                self.history_search
+                    .as_ref()
+                    .map(|hs| hs.saved_content().to_string())
+            })
+            .unwrap_or_default();
+        self.set_textarea_content(&content);
     }
 
     // ── Tab completion ───────────────────────────────────────────────────────
@@ -1472,50 +1486,61 @@ impl TuiApp {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Split: search input line at top, match list below
+        // Bottom-up layout: match list above, search line at bottom
         let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Min(0),    // match list (fills remaining space)
+            Constraint::Length(1), // search input line
         ])
         .split(inner);
 
-        // Search line with blinking-block cursor indicator
+        // ── Search line (bottom) ────────────────────────────────────────────
         let search_line = Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled(hs.query().to_string(), Style::default().fg(Color::White)),
             Span::styled("█", Style::default().fg(Color::Cyan)),
         ]);
-        f.render_widget(Paragraph::new(search_line), chunks[0]);
+        f.render_widget(Paragraph::new(search_line), chunks[1]);
 
-        // Match list
-        let list_h = chunks[1].height as usize;
-        let list_w = chunks[1].width as usize;
+        // ── Match list (above, rendered bottom-to-top) ─────────────────────
+        let list_h = chunks[0].height as usize;
+        let list_w = chunks[0].width as usize;
+        let all = hs.all_matches();
+        let offset = hs.scroll_offset();
 
-        let items: Vec<ListItem> = hs
-            .all_matches()
+        // Collect the visible slice then reverse it so most-recent is at bottom
+        let visible: Vec<(usize, usize)> = all
             .iter()
             .enumerate()
-            .skip(hs.scroll_offset())
+            .skip(offset)
             .take(list_h)
-            .map(|(idx, &entry_idx)| {
-                let is_sel = idx == hs.selected();
-                let entry = &entries[entry_idx];
-                // Show only the first line, truncated
-                let first_line = entry.lines().next().unwrap_or(entry.as_str());
-                let truncated: String = first_line.chars().take(list_w.saturating_sub(1)).collect();
-                let style = if is_sel {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                ListItem::new(Line::from(Span::styled(truncated, style)))
-            })
+            .map(|(idx, &entry_idx)| (idx, entry_idx))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
             .collect();
 
-        f.render_widget(List::new(items), chunks[1]);
+        // Pad with blank rows at the top so results are bottom-aligned
+        let pad = list_h.saturating_sub(visible.len());
+        let mut items: Vec<ListItem> = (0..pad)
+            .map(|_| ListItem::new(Line::from("")))
+            .collect();
+
+        for (idx, entry_idx) in &visible {
+            let is_sel = *idx == hs.selected();
+            let entry = &entries[*entry_idx];
+            let display = history_search::format_entry_oneline(entry, list_w.saturating_sub(1));
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            items.push(ListItem::new(Line::from(Span::styled(display, style))));
+        }
+
+        f.render_widget(List::new(items), chunks[0]);
     }
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {
