@@ -62,10 +62,21 @@ impl HistorySearch {
 
     fn recompute(&mut self, entries: &[String]) {
         let q = self.query.to_lowercase();
-        self.all_matches = (0..entries.len())
-            .rev() // most-recent first
-            .filter(|&i| q.is_empty() || entries[i].to_lowercase().contains(&q))
-            .collect();
+        let mut result = Vec::new();
+        let mut last_seen = "";
+        for i in (0..entries.len()).rev() {
+            let entry = entries[i].as_str();
+            // Skip entries that are identical to the one immediately after them
+            // in chronological order (consecutive duplicates in history).
+            if entry == last_seen {
+                continue;
+            }
+            last_seen = entry;
+            if q.is_empty() || entry.to_lowercase().contains(&q) {
+                result.push(i);
+            }
+        }
+        self.all_matches = result;
         self.selected = 0;
         self.scroll_offset = 0;
     }
@@ -231,5 +242,20 @@ mod tests {
         let result = format_entry_oneline(long, 20);
         assert!(result.ends_with("(...)"));
         assert!(result.chars().count() <= 20);
+    }
+
+    #[test]
+    fn test_consecutive_duplicates_removed() {
+        let e = vec![
+            "SELECT 1;".to_string(),
+            "SELECT 2;".to_string(),
+            "SELECT 2;".to_string(),
+            "SELECT 2;".to_string(),
+            "SELECT 1;".to_string(),
+        ];
+        let s = HistorySearch::new(String::new(), &e);
+        // "SELECT 2;" runs 3× consecutively → shown once; "SELECT 1;" at both
+        // ends is not consecutive with SELECT 2 → shown twice.
+        assert_eq!(s.all_matches().len(), 3);
     }
 }
