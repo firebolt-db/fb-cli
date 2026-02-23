@@ -82,7 +82,7 @@ fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Va
             return (
                 &rows[..i],
                 Some(format!(
-                    "Showing {} of {} rows (use \\view to see all).",
+                    "Showing {} of {} rows (use /view to see all).",
                     format_number(i as u64),
                     format_number(rows.len() as u64),
                 )),
@@ -95,7 +95,7 @@ fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Va
             return (
                 &rows[..=i],
                 Some(format!(
-                    "Showing {} of {} rows (use \\view to see all).",
+                    "Showing {} of {} rows (use /view to see all).",
                     format_number((i + 1) as u64),
                     format_number(rows.len() as u64),
                 )),
@@ -186,6 +186,7 @@ pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<Str
         .post(context.url.clone())
         .header("user-agent", USER_AGENT)
         .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
+        .header("Firebolt-Machine-Query", "true")
         .body(query_text.to_string());
 
     let request = if let Some(sa_token) = &context.sa_token {
@@ -462,7 +463,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                                                     let rendered = render_table_output(context, &columns, &display_rows, terminal_width, max_cell);
                                                                     out!(context, "{}", rendered);
                                                                 }
-                                                                out_err!(context, "Showing first {} rows — collecting remainder for Ctrl+V / \\view...",
+                                                                out_err!(context, "Showing first {} rows — collecting remainder for Ctrl+V / /view...",
                                                                     format_number(display_rows.len() as u64));
                                                                 display_emitted = true;
                                                             } else {
@@ -517,7 +518,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                     }
                                 } else {
                                     // Partial display was already emitted; show the final total
-                                    out_err!(context, "Showing {} of {} rows (press Ctrl+V or \\view to see all).",
+                                    out_err!(context, "Showing {} of {} rows (press Ctrl+V or /view to see all).",
                                         format_number(display_rows.len() as u64),
                                         format_number(all_rows.len() as u64));
                                 }

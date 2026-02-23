@@ -262,15 +262,30 @@ pub fn collect_candidates(
         let usage_count = usage_tracker.get_count(ItemType::Function, &function);
         let usage_bonus = usage_count.min(MAX_USAGE) * USAGE_MULTIPLIER;
 
+        // Handle the "name-distinct" pattern: e.g. "count-distinct" →
+        // display as "count-distinct()" but insert "count(DISTINCT ".
+        let (display, insert, alts) = if let Some(base) = function.strip_suffix("-distinct") {
+            (
+                format!("{}-distinct()", base),
+                format!("{}(DISTINCT ", base),
+                vec![function.clone(), base.to_string(), format!("{}_distinct", base)],
+            )
+        } else {
+            (
+                format!("{}()", function),
+                format!("{}(", function),
+                vec![function.clone()],
+            )
+        };
+
         items.push(Candidate {
-            display: format!("{}()", function),
-            insert: format!("{}(", function),
+            display,
+            insert,
             description: "function",
             item_type: ItemType::Function,
             schema: String::new(),
             table_name: None,
-            // Match without parens in case user types "func_name" without "("
-            alts: vec![function.clone()],
+            alts,
             priority: PRIORITY_FUNCTION.saturating_add(usage_bonus),
         });
     }

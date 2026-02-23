@@ -52,11 +52,11 @@ use output_pane::OutputPane;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Parse `\benchmark [N] <query>` arguments.
+/// Parse `/benchmark [N] <query>` arguments.
 /// Returns `(n_runs, query_text)` where `n_runs` defaults to 3.
 fn parse_benchmark_args(cmd: &str) -> (usize, String) {
     let rest = cmd
-        .strip_prefix("\\benchmark")
+        .strip_prefix("/benchmark")
         .unwrap_or(cmd)
         .trim()
         .to_string();
@@ -72,6 +72,40 @@ fn parse_benchmark_args(cmd: &str) -> (usize, String) {
 
     // No number — entire rest is the query, default 3 runs
     (3, rest)
+}
+
+/// Expand a command alias to a full SQL query, returning `None` if the command
+/// is not a known alias.
+///
+/// Adding a new alias: add a branch to the `match` below.
+fn expand_command_alias(cmd: &str) -> Option<String> {
+    let parts: Vec<&str> = cmd.splitn(3, char::is_whitespace).collect();
+    match parts[0] {
+        "/qh" => {
+            // /qh [limit] [since_minutes]
+            let limit = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(10);
+            let since_minutes = parts.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(60);
+            Some(format!(
+                "SELECT * FROM information_schema.engine_user_query_history \
+                 WHERE start_time > now() - interval '{since_minutes} minutes' \
+                 ORDER BY start_time DESC LIMIT {limit}"
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Percent-decode a `key=value` setting string for display.
+/// Splits on the first `=` so only the value part is decoded.
+fn url_decode_setting(s: &str) -> String {
+    if let Some((key, val)) = s.split_once('=') {
+        let decoded = urlencoding::decode(val)
+            .map(|v| v.into_owned())
+            .unwrap_or_else(|_| val.to_string());
+        format!("{}={}", key, decoded)
+    } else {
+        s.to_string()
+    }
 }
 
 fn format_with_commas(n: u64) -> String {
@@ -463,9 +497,9 @@ impl TuiApp {
                     return false;
                 }
 
-                // Backslash meta-commands
-                if trimmed.starts_with('\\') {
-                    self.handle_backslash_command(&trimmed).await;
+                // Slash meta-commands
+                if trimmed.starts_with('/') {
+                    self.handle_slash_command(&trimmed).await;
                     self.reset_textarea();
                     return false;
                 }
@@ -701,11 +735,26 @@ impl TuiApp {
         let line_to_cursor = &lines[cursor_row][..cursor_col];
         let full_sql = lines.join("\n");
 
-        let (word_start_byte_in_line, items) =
+        let (word_start_byte_in_line, mut items) =
             self.completer.complete_at(line_to_cursor, cursor_col, &full_sql);
 
         if items.is_empty() {
             return;
+        }
+
+        // If the character immediately after the cursor is already `(`, strip the
+        // trailing `(` from function completion inserts so we don't double up.
+        let next_char_is_paren = lines
+            .get(cursor_row)
+            .and_then(|line| line[cursor_col..].chars().next())
+            .map(|c| c == '(')
+            .unwrap_or(false);
+        if next_char_is_paren {
+            for item in &mut items {
+                if item.value.ends_with('(') {
+                    item.value.pop();
+                }
+            }
         }
 
         // word_start as byte offset in the FULL text (for deletion later)
@@ -866,28 +915,40 @@ impl TuiApp {
         false
     }
 
-    // ── Backslash commands ───────────────────────────────────────────────────
+    // ── Slash commands ────────────────────────────────────────────────────────
 
-    async fn handle_backslash_command(&mut self, cmd: &str) {
-        // Dispatch \export: write last result to a file
-        if cmd.starts_with("\\export") {
+    async fn handle_slash_command(&mut self, cmd: &str) {
+        // Dispatch /export: write last result to a file
+        if cmd.starts_with("/export") {
             self.history.add(cmd.to_string());
             self.do_export(cmd);
             return;
         }
 
-        // Dispatch \benchmark separately since it needs async query execution
-        if cmd.starts_with("\\benchmark") {
+        // Dispatch /benchmark separately since it needs async query execution
+        if cmd.starts_with("/benchmark") {
             self.history.add(cmd.to_string());
             let (n_runs, query_text) = parse_benchmark_args(cmd);
             self.do_benchmark(n_runs, query_text).await;
             return;
         }
 
+        // Dispatch command aliases (e.g. /qh)
+        if let Some(expanded) = expand_command_alias(cmd) {
+            // Execute the expanded SQL query as if the user typed it
+            if let Some(queries) = crate::query::try_split_queries(&expanded) {
+                self.history.add(cmd.to_string());
+                self.execute_queries(expanded, queries).await;
+            } else {
+                self.output.push_line(format!("Error: could not parse expanded query for: {}", cmd));
+            }
+            return;
+        }
+
         match cmd {
-            "\\view" => self.open_viewer(),
-            "\\refresh" | "\\refresh_cache" => self.do_refresh(),
-            "\\help" => self.show_help(),
+            "/view" => self.open_viewer(),
+            "/refresh" | "/refresh_cache" => self.do_refresh(),
+            "/help" => self.show_help(),
             _ => {
                 match handle_meta_command(&mut self.context, cmd) {
                     Ok(true) => {}
@@ -903,13 +964,13 @@ impl TuiApp {
 
     // ── Export ───────────────────────────────────────────────────────────────
 
-    /// Handle `\export <file> [format]` — write the last query result to a file.
+    /// Handle `/export <file> [format]` — write the last query result to a file.
     /// Supported formats: csv (default), tsv, json, jsonlines.
     fn do_export(&mut self, cmd: &str) {
-        // Parse: \export <path> [format]
-        let rest = cmd.strip_prefix("\\export").unwrap_or("").trim();
+        // Parse: /export <path> [format]
+        let rest = cmd.strip_prefix("/export").unwrap_or("").trim();
         if rest.is_empty() {
-            self.output.push_line("Usage: \\export <file> [csv|tsv|json|jsonlines]");
+            self.output.push_line("Usage: /export <file> [csv|tsv|json|jsonlines]");
             return;
         }
 
@@ -1024,7 +1085,7 @@ impl TuiApp {
     async fn do_benchmark(&mut self, n_runs: usize, query_text: String) {
         if query_text.trim().is_empty() {
             self.output.push_line(
-                "Usage: \\benchmark [N] <query>  (default N=3, first run is warmup)",
+                "Usage: /benchmark [N] <query>  (default N=3, first run is warmup)",
             );
             return;
         }
@@ -1052,6 +1113,11 @@ impl TuiApp {
             // Silence all output during benchmark runs
             let (tx, mut rx) = mpsc::unbounded_channel::<TuiMsg>();
             let mut ctx = self.context.clone();
+            // Disable result cache for accurate timing
+            if !ctx.args.extra.iter().any(|e| e.starts_with("enable_result_cache=")) {
+                ctx.args.extra.push("enable_result_cache=false".to_string());
+                ctx.update_url();
+            }
             ctx.tui_output_tx = Some(tx);
 
             let start = Instant::now();
@@ -1240,6 +1306,26 @@ impl TuiApp {
     async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
         // Echo query to output pane with syntax highlighting
         self.push_sql_echo(original_text.trim());
+
+        // Show custom settings (from /set commands) between query echo and result
+        let display_extras: Vec<String> = self
+            .context
+            .args
+            .extra
+            .iter()
+            .filter(|e| {
+                // Skip params that are always present as part of the URL construction
+                !e.starts_with("database=")
+                    && !e.starts_with("format=")
+                    && !e.starts_with("query_label=")
+                    && !e.starts_with("advanced_mode=")
+                    && !e.starts_with("output_format=")
+            })
+            .map(|e| url_decode_setting(e))
+            .collect();
+        if !display_extras.is_empty() {
+            self.output.push_stat(&format!("  Settings: {}", display_extras.join(", ")));
+        }
 
         let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
         let cancel_token = CancellationToken::new();
@@ -1721,11 +1807,12 @@ impl TuiApp {
             ("Escape",        "Close any open popup"),
         ];
         let commands: &[(&str, &str)] = &[
-            ("\\help",           "Show this help"),
-            ("\\set k=v",        "Set a query parameter"),
-            ("\\unset k",        "Remove a query parameter"),
-            ("\\benchmark [N]",  "Run query N times (default 3) and report timings"),
-            ("\\export <file>",  "Export last result to CSV/JSON/TSV"),
+            ("/help",              "Show this help"),
+            ("/set k=v",          "Set a query parameter"),
+            ("/unset k",          "Remove a query parameter"),
+            ("/benchmark [N]",    "Run query N times (default 3) and report timings"),
+            ("/export <file>",    "Export last result to CSV/JSON/TSV"),
+            ("/qh [limit] [min]", "Query history (default: last 10 in 60 min)"),
         ];
 
         // Determine column widths
@@ -1871,21 +1958,21 @@ mod tests {
 
     #[test]
     fn test_parse_benchmark_args_default() {
-        let (n, q) = parse_benchmark_args("\\benchmark SELECT 1");
+        let (n, q) = parse_benchmark_args("/benchmark SELECT 1");
         assert_eq!(n, 3);
         assert_eq!(q, "SELECT 1");
     }
 
     #[test]
     fn test_parse_benchmark_args_explicit_n() {
-        let (n, q) = parse_benchmark_args("\\benchmark 5 SELECT 1");
+        let (n, q) = parse_benchmark_args("/benchmark 5 SELECT 1");
         assert_eq!(n, 5);
         assert_eq!(q, "SELECT 1");
     }
 
     #[test]
     fn test_parse_benchmark_args_no_query() {
-        let (n, q) = parse_benchmark_args("\\benchmark");
+        let (n, q) = parse_benchmark_args("/benchmark");
         assert_eq!(n, 3);
         assert_eq!(q, "");
     }
@@ -1893,7 +1980,7 @@ mod tests {
     #[test]
     fn test_parse_benchmark_args_min_n() {
         // 0 should be clamped to 1
-        let (n, _) = parse_benchmark_args("\\benchmark 0 SELECT 1");
+        let (n, _) = parse_benchmark_args("/benchmark 0 SELECT 1");
         assert_eq!(n, 1);
     }
 
