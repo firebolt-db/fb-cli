@@ -83,7 +83,7 @@ fn expand_command_alias(cmd: &str) -> Option<String> {
     match parts[0] {
         "/qh" => {
             // /qh [limit] [since_minutes]
-            let limit = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(10);
+            let limit = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(100);
             let since_minutes = parts.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(60);
             Some(format!(
                 "SELECT * FROM information_schema.engine_user_query_history \
@@ -770,10 +770,13 @@ impl TuiApp {
             self.textarea.move_cursor(CursorMove::Jump(cursor_row as u16, word_start_byte_in_line as u16));
             self.textarea.delete_str(partial_len);
             self.textarea.insert_str(&value);
+            if next_char_is_paren {
+                self.textarea.move_cursor(CursorMove::Forward);
+            }
             return;
         }
 
-        let cs = CompletionState::new(items, word_start_byte, word_start_byte_in_line, cursor_row);
+        let cs = CompletionState::new(items, word_start_byte, word_start_byte_in_line, cursor_row, next_char_is_paren);
         self.completion_state = Some(cs);
     }
 
@@ -791,11 +794,15 @@ impl TuiApp {
 
         let (cursor_row, cursor_col) = self.textarea.cursor();
         let partial_len = cursor_col - cs.word_start_col;
+        let advance = cs.advance_past_paren;
         // Jump to word start, then delete the partial word forward, then insert.
         // (delete_str deletes FORWARD from cursor, so we must reposition first.)
         self.textarea.move_cursor(CursorMove::Jump(cursor_row as u16, cs.word_start_col as u16));
         self.textarea.delete_str(partial_len);
         self.textarea.insert_str(&selected);
+        if advance {
+            self.textarea.move_cursor(CursorMove::Forward);
+        }
     }
 
     /// Key handler active while the completion popup is open.
@@ -1690,7 +1697,7 @@ impl TuiApp {
             ("/set k=v",          "Set a query parameter"),
             ("/unset k",          "Remove a query parameter"),
             ("/benchmark [N]",    "Run query N times (default 3) and report timings"),
-            ("/qh [limit] [min]", "Query history (default: last 10 in 60 min)"),
+            ("/qh [limit] [min]", "Query history (default: last 100 in 60 min)"),
         ];
 
         // Determine column widths

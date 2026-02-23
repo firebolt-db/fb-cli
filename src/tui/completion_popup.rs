@@ -26,6 +26,9 @@ pub struct CompletionState {
     pub word_start_col: usize,
     /// Textarea cursor row (0-based) when completion was triggered.
     pub cursor_row: usize,
+    /// When true, move the cursor one step forward after insertion to place it
+    /// inside an already-existing `(` that follows the completed word.
+    pub advance_past_paren: bool,
 }
 
 impl CompletionState {
@@ -34,6 +37,7 @@ impl CompletionState {
         word_start_byte: usize,
         word_start_col: usize,
         cursor_row: usize,
+        advance_past_paren: bool,
     ) -> Self {
         Self {
             items,
@@ -42,6 +46,7 @@ impl CompletionState {
             word_start_byte,
             word_start_col,
             cursor_row,
+            advance_past_paren,
         }
     }
 
