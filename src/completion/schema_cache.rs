@@ -20,6 +20,9 @@ pub struct ColumnMetadata {
 pub struct SchemaCache {
     tables: Arc<RwLock<HashMap<String, TableMetadata>>>,
     functions: Arc<RwLock<HashSet<String>>>,
+    /// Maps lowercase function name → list of signature strings, e.g.
+    /// `"upper"` → `["upper(text)"]`.  Empty until a successful parameters query.
+    function_signatures: Arc<RwLock<HashMap<String, Vec<String>>>>,
     keywords: HashSet<String>,
     last_refresh: Arc<RwLock<Option<Instant>>>,
     ttl: Duration,
@@ -31,6 +34,7 @@ impl SchemaCache {
         Self {
             tables: Arc::new(RwLock::new(HashMap::new())),
             functions: Arc::new(RwLock::new(HashSet::new())),
+            function_signatures: Arc::new(RwLock::new(HashMap::new())),
             keywords: Self::load_keywords(),
             last_refresh: Arc::new(RwLock::new(None)),
             ttl: Duration::from_secs(ttl_seconds),
@@ -292,6 +296,15 @@ impl SchemaCache {
         result
     }
 
+    /// Return the known signatures for a function (lowercase name).
+    /// Returns an empty Vec if no signature data was loaded from the server.
+    pub fn get_signatures(&self, func_name: &str) -> Vec<String> {
+        let sigs = self.function_signatures.read().unwrap();
+        sigs.get(&func_name.to_lowercase())
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Synchronous method to get completions from cache
     pub fn get_completions(
         &self,
@@ -431,6 +444,15 @@ impl SchemaCache {
 
         let functions_result = query_silent(context, functions_query).await;
 
+        // Query function signatures from information_schema.routines.
+        // `routine_parameters` is an array column containing the parameter types
+        // for each overload, e.g. `["text"]` or `["anyelement","anyelement"]`.
+        let signatures_query = "SELECT routine_name, routine_parameters \
+                                 FROM information_schema.routines \
+                                 WHERE routine_type != 'OPERATOR' \
+                                 ORDER BY routine_name";
+        let signatures_result = query_silent(context, signatures_query).await;
+
         // Parse and populate cache
         let mut new_tables = HashMap::new();
 
@@ -505,6 +527,16 @@ impl SchemaCache {
             Err(e) => {
                 eprintln!("Warning: Functions query failed: {}", e);
             }
+        }
+
+        // Parse function signatures (best-effort; silently ignored on failure)
+        match signatures_result {
+            Ok(sig_output) => {
+                if let Some(sig_map) = Self::parse_function_signatures(&sig_output) {
+                    *self.function_signatures.write().unwrap() = sig_map;
+                }
+            }
+            Err(_) => { /* information_schema.parameters not available — that's fine */ }
         }
 
         Ok(())
@@ -660,6 +692,57 @@ impl SchemaCache {
         } else {
             Some(result)
         }
+    }
+
+    /// Parse `(routine_name, routine_parameters)` rows from `information_schema.routines`
+    /// into a map of lowercase function name → list of signature strings.
+    ///
+    /// `routine_parameters` is a JSON array of parameter type strings per overload,
+    /// e.g. `["text"]` or `["anyelement", "anyelement"]`.
+    fn parse_function_signatures(output: &str) -> Option<HashMap<String, Vec<String>>> {
+        let mut sig_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(msg_type) = json.get("message_type").and_then(|v| v.as_str()) {
+                    if msg_type == "DATA" {
+                        if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
+                            for row in data {
+                                if let Some(arr) = row.as_array() {
+                                    if arr.len() < 2 { continue; }
+                                    let rname = arr[0].as_str().unwrap_or("").trim().to_string();
+                                    if rname.is_empty() { continue; }
+
+                                    // routine_parameters is a JSON array of type strings
+                                    let params: Vec<String> = arr[1]
+                                        .as_array()
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|v| v.as_str())
+                                                .map(|s| s.to_string())
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+
+                                    let sig = format!("{}({})", rname, params.join(", "));
+                                    let entry = sig_map
+                                        .entry(rname.to_lowercase())
+                                        .or_default();
+                                    if !entry.contains(&sig) {
+                                        entry.push(sig);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if sig_map.is_empty() { None } else { Some(sig_map) }
     }
 }
 

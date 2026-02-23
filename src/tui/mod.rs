@@ -4,6 +4,7 @@ pub mod history;
 pub mod history_search;
 pub mod layout;
 pub mod output_pane;
+pub mod signature_hint;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -119,6 +120,10 @@ pub struct TuiApp {
     /// Active Ctrl+R reverse-search session; `None` when not searching.
     history_search: Option<HistorySearch>,
 
+    /// Current function-signature hint: (func_name, [sig1, sig2, ...]).
+    /// `None` when the cursor is not inside a function call.
+    signature_hint: Option<(String, Vec<String>)>,
+
     // After leaving alt-screen for csvlens we need a full redraw
     needs_clear: bool,
     should_quit: bool,
@@ -175,6 +180,7 @@ impl TuiApp {
             fuzzy_state: None,
             help_visible: false,
             history_search: None,
+            signature_hint: None,
             needs_clear: false,
             should_quit: false,
             has_error: false,
@@ -261,6 +267,7 @@ impl TuiApp {
                         if self.handle_key(key).await {
                             break;
                         }
+                        self.update_signature_hint();
                     }
 
                     Event::Mouse(mouse) => match mouse.kind {
@@ -634,6 +641,43 @@ impl TuiApp {
             })
             .unwrap_or_default();
         self.set_textarea_content(&content);
+    }
+
+    // ── Signature hint ───────────────────────────────────────────────────────
+
+    /// Recompute which function (if any) the cursor is currently inside and
+    /// update `self.signature_hint` accordingly.
+    fn update_signature_hint(&mut self) {
+        // Don't show during overlays or while a query is running
+        if self.is_running
+            || self.history_search.is_some()
+            || self.fuzzy_state.is_some()
+            || self.help_visible
+            || self.context.args.no_completion
+        {
+            self.signature_hint = None;
+            return;
+        }
+
+        let lines = self.textarea.lines();
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        // Compute cursor byte offset in the joined SQL
+        let byte_offset: usize = lines[..cursor_row]
+            .iter()
+            .map(|l| l.len() + 1) // +1 for \n
+            .sum::<usize>()
+            + cursor_col;
+        let full_sql = lines.join("\n");
+
+        match signature_hint::detect_function_at_cursor(&full_sql, byte_offset) {
+            Some(func_name) => {
+                let sigs = self.schema_cache.get_signatures(&func_name);
+                self.signature_hint = Some((func_name, sigs));
+            }
+            None => {
+                self.signature_hint = None;
+            }
+        }
     }
 
     // ── Tab completion ───────────────────────────────────────────────────────
@@ -1352,6 +1396,15 @@ impl TuiApp {
             }
         }
 
+        // Signature hint popup (above input, near where the function name starts)
+        if let Some((func_name, sigs)) = &self.signature_hint {
+            if self.history_search.is_none() && self.fuzzy_state.is_none() {
+                let func_name = func_name.clone();
+                let sigs = sigs.clone();
+                Self::render_signature_hint(f, layout.input, area, &func_name, &sigs);
+            }
+        }
+
         // Fuzzy search overlay (rendered on top of everything)
         if let Some(fs) = &self.fuzzy_state {
             let fuzzy_rect = fuzzy_popup::popup_area(layout.input, area);
@@ -1573,6 +1626,69 @@ impl TuiApp {
         }
 
         f.render_widget(List::new(items), chunks[0]);
+    }
+
+    fn render_signature_hint(
+        f: &mut ratatui::Frame,
+        input_area: Rect,
+        total: Rect,
+        func_name: &str,
+        sigs: &[String],
+    ) {
+        use ratatui::{
+            style::Modifier,
+            widgets::{Clear, List, ListItem},
+        };
+
+        // Build display lines
+        let lines: Vec<String> = if sigs.is_empty() {
+            vec![format!("{}(...)", func_name)]
+        } else {
+            sigs.to_vec()
+        };
+
+        let n = lines.len() as u16;
+        let popup_h = n + 2; // content rows + 2 borders
+        let popup_w = {
+            let max_w = lines.iter().map(|l| l.len()).max().unwrap_or(10) as u16 + 4;
+            max_w.min(total.width.saturating_sub(4))
+        };
+
+        // Anchor: just above the input area, right-aligned within the terminal
+        let y = input_area.y.saturating_sub(popup_h);
+        let x = total.width.saturating_sub(popup_w + 1);
+        let rect = Rect::new(x, y, popup_w, popup_h);
+
+        f.render_widget(Clear, rect);
+
+        let title = Span::styled(
+            format!(" {} ", func_name),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        );
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Indexed(67)));
+
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+
+        let items: Vec<ListItem> = lines
+            .iter()
+            .map(|sig| {
+                // Colour: function name in cyan, parens+types in default
+                let paren = sig.find('(').unwrap_or(sig.len());
+                let (fname, rest) = sig.split_at(paren);
+                ListItem::new(Line::from(vec![
+                    Span::styled(fname.to_string(), Style::default().fg(Color::LightCyan)),
+                    Span::styled(rest.to_string(), Style::default().fg(Color::White)),
+                ]))
+            })
+            .collect();
+
+        f.render_widget(List::new(items), inner);
     }
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {
