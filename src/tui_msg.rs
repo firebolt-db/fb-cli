@@ -8,6 +8,8 @@ pub enum TuiMsg {
     Progress(u64),
     /// The parsed result of the last successful SELECT query (for csvlens / export).
     ParsedResult(crate::table_renderer::ParsedResult),
+    /// Overwrite the running-pane hint line (e.g. benchmark run progress).
+    RunHint(String),
 }
 
 /// A single rendered line made up of zero or more styled spans.

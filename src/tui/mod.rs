@@ -332,6 +332,9 @@ impl TuiApp {
 
         loop {
             match rx.try_recv() {
+                Ok(TuiMsg::RunHint(hint)) => {
+                    self.running_hint = hint;
+                }
                 Ok(TuiMsg::Progress(n)) => {
                     self.progress_rows = n;
                 }
@@ -969,6 +972,10 @@ impl TuiApp {
 
     /// Run `query_text` N+1 times (1 warmup), collect per-run elapsed times,
     /// and display min/avg/p90/max statistics in the output pane.
+    ///
+    /// Spawns a background task and sets `is_running = true` so the spinner /
+    /// timer are visible and Ctrl+C works.  Each run's result is streamed back
+    /// through the normal query channel as it completes.
     async fn do_benchmark(&mut self, n_runs: usize, query_text: String) {
         if query_text.trim().is_empty() {
             self.output.push_line(
@@ -986,89 +993,115 @@ impl TuiApp {
         ));
         self.push_sql_echo(query_text.trim());
 
-        let mut times_ms: Vec<f64> = Vec::with_capacity(n_runs);
+        // Set up channel + running state, exactly like execute_queries.
+        let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
+        let cancel_token = CancellationToken::new();
+        self.query_rx = Some(rx);
+        self.cancel_token = Some(cancel_token.clone());
+        self.is_running = true;
+        self.running_hint.clear();
+        self.progress_rows = 0;
+        self.query_start = Some(Instant::now());
 
-        for i in 0..total {
-            let queries = match crate::query::try_split_queries(query_text.trim()) {
-                Some(q) => q,
-                None => {
-                    self.output.push_line("Error: could not parse query");
+        let query_text = query_text.trim().to_string();
+        let mut ctx = self.context.clone();
+        // Disable result cache for accurate timing
+        if !ctx.args.extra.iter().any(|e| e.starts_with("enable_result_cache=")) {
+            ctx.args.extra.push("enable_result_cache=false".to_string());
+            ctx.update_url();
+        }
+
+        tokio::spawn(async move {
+            let mut times_ms: Vec<f64> = Vec::with_capacity(n_runs);
+
+            for i in 0..total {
+                if cancel_token.is_cancelled() {
+                    let _ = tx.send(TuiMsg::Line("Benchmark cancelled.".to_string()));
                     return;
                 }
-            };
 
-            // Silence all output during benchmark runs
-            let (tx, mut rx) = mpsc::unbounded_channel::<TuiMsg>();
-            let mut ctx = self.context.clone();
-            // Disable result cache for accurate timing
-            if !ctx.args.extra.iter().any(|e| e.starts_with("enable_result_cache=")) {
-                ctx.args.extra.push("enable_result_cache=false".to_string());
-                ctx.update_url();
-            }
-            ctx.tui_output_tx = Some(tx);
+                let label = if i == 0 {
+                    "warmup".to_string()
+                } else {
+                    format!("run {}/{}", i, n_runs)
+                };
+                let _ = tx.send(TuiMsg::RunHint(format!("  {label}…")));
 
-            let start = Instant::now();
-            let handle = tokio::spawn(async move {
-                for q in queries {
-                    if crate::query::query(&mut ctx, q).await.is_err() {
-                        return false;
+                let queries = match crate::query::try_split_queries(&query_text) {
+                    Some(q) => q,
+                    None => {
+                        let _ = tx.send(TuiMsg::Line("Error: could not parse query".to_string()));
+                        return;
                     }
-                }
-                true
-            });
+                };
 
-            // Drain messages (discard) while the query runs
-            loop {
-                tokio::select! {
-                    msg = rx.recv() => {
-                        if msg.is_none() { break; }
+                // Inner context: discard output, share the cancel token
+                let (run_tx, mut run_rx) = mpsc::unbounded_channel::<TuiMsg>();
+                let mut run_ctx = ctx.clone();
+                run_ctx.tui_output_tx = Some(run_tx);
+                run_ctx.query_cancel = Some(cancel_token.clone());
+
+                let start = Instant::now();
+                let mut handle = tokio::spawn(async move {
+                    for q in queries {
+                        if crate::query::query(&mut run_ctx, q).await.is_err() {
+                            return false;
+                        }
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                        // Continue draining
+                    true
+                });
+
+                // Wait for the run to complete, draining output and watching for Ctrl+C.
+                let ok = loop {
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            handle.abort();
+                            let _ = tx.send(TuiMsg::Line("Benchmark cancelled.".to_string()));
+                            return;
+                        }
+                        result = &mut handle => {
+                            while run_rx.try_recv().is_ok() {}
+                            break result.unwrap_or(false);
+                        }
+                        Some(_) = run_rx.recv() => {
+                            // drain inner-run messages silently
+                        }
                     }
+                };
+
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+                if !ok {
+                    let _ = tx.send(TuiMsg::Line("Error: query failed during benchmark".to_string()));
+                    return;
                 }
-                // Stop when the handle has completed
-                if handle.is_finished() {
-                    // Drain remaining
-                    while rx.try_recv().is_ok() {}
-                    break;
+
+                let line = if i == 0 {
+                    format!("  warmup: {:.1}ms", elapsed)
+                } else {
+                    format!("  run {}/{}: {:.1}ms", i, n_runs, elapsed)
+                };
+                let _ = tx.send(TuiMsg::Line(line));
+                if i > 0 {
+                    times_ms.push(elapsed);
                 }
             }
 
-            let ok = handle.await.unwrap_or(false);
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
-            if !ok {
-                self.output.push_line("Error: query failed during benchmark");
-                return;
+            if !times_ms.is_empty() {
+                let min = times_ms.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = times_ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let avg = times_ms.iter().sum::<f64>() / times_ms.len() as f64;
+                let mut sorted = times_ms.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let p90_idx = (sorted.len() as f64 * 0.9).ceil() as usize;
+                let p90 = sorted[p90_idx.saturating_sub(1).min(sorted.len() - 1)];
+                let _ = tx.send(TuiMsg::Line(format!(
+                    "Results: min={:.1}ms  avg={:.1}ms  p90={:.1}ms  max={:.1}ms",
+                    min, avg, p90, max
+                )));
             }
-
-            if i == 0 {
-                self.output.push_line(format!("  warmup: {:.1}ms", elapsed));
-            } else {
-                self.output.push_line(format!("  run {}: {:.1}ms", i, elapsed));
-                times_ms.push(elapsed);
-            }
-        }
-
-        if times_ms.is_empty() {
-            return;
-        }
-
-        // Compute statistics
-        let min = times_ms.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = times_ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let avg = times_ms.iter().sum::<f64>() / times_ms.len() as f64;
-
-        let mut sorted = times_ms.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let p90_idx = (sorted.len() as f64 * 0.9).ceil() as usize;
-        let p90 = sorted[p90_idx.saturating_sub(1).min(sorted.len() - 1)];
-
-        self.output.push_line(format!(
-            "Results: min={:.1}ms  avg={:.1}ms  p90={:.1}ms  max={:.1}ms",
-            min, avg, p90, max
-        ));
+            // `tx` dropped here → channel disconnects → is_running = false
+        });
     }
 
     /// Called from handle_key: validates that data is available, then queues
