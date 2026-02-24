@@ -65,7 +65,7 @@ The REPL uses a full-terminal layout:
 │  FROM orders                                  │
 │                                               │
 ├───────────────────────────────────────────────┤
-│  localhost:3473 | firebolt    Tab complete … │
+│  localhost:3473 | firebolt    Tab complete …  │
 └───────────────────────────────────────────────┘
 ```
 
@@ -122,10 +122,25 @@ Type these directly in the REPL (or pass with `-c`):
 
 ### `/qh` — Query History
 
+`/qh [limit] [minutes]`
+
+- `limit` — maximum number of rows to return (default: 100)
+- `minutes` — look back window in minutes (default: 60)
+
 ```
 /qh           -- last 100 queries from the past hour
 /qh 50        -- last 50 queries from the past hour
 /qh 200 1440  -- last 200 queries from the past day
+```
+
+Shorthand for:
+
+```sql
+SELECT *
+FROM information_schema.engine_user_query_history
+WHERE start_time > now() - interval '<minutes> minutes'
+ORDER BY start_time DESC
+LIMIT <limit>;
 ```
 
 ### `/benchmark` — Benchmark Mode
