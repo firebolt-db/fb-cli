@@ -39,7 +39,7 @@ use crate::completion::SqlCompleter;
 use crate::context::Context;
 use crate::highlight::SqlHighlighter;
 use crate::meta_commands::handle_meta_command;
-use crate::query::{query, set_args, try_split_queries, unset_args, validate_setting};
+use crate::query::{dot_command, query, set_args, try_split_queries, unset_args, validate_setting};
 use crate::viewer::open_csvlens_viewer;
 
 use completion_popup::CompletionState;
@@ -703,6 +703,16 @@ impl TuiApp {
                 // Slash meta-commands
                 if trimmed.starts_with('/') {
                     self.handle_slash_command(&trimmed).await;
+                    self.reset_textarea();
+                    return false;
+                }
+
+                // Dot client-side commands: .format = ..., .completion = on|off
+                if trimmed.starts_with('.') {
+                    self.history.add(trimmed.clone());
+                    self.output.push_line(trimmed.clone());
+                    dot_command(&mut self.context, &trimmed);
+                    self.completer.set_enabled(!self.context.args.no_completion);
                     self.reset_textarea();
                     return false;
                 }
@@ -1671,7 +1681,7 @@ impl TuiApp {
             return;
         }
         if !self.context.args.format.starts_with("client:") {
-            self.set_flash("Viewer requires client format — run: set format = client:auto;");
+            self.set_flash("Viewer requires client format — run: .format = client:auto");
             return;
         }
         self.pending_viewer = true;
@@ -1845,6 +1855,22 @@ impl TuiApp {
         // that change server-side parameters (i.e. modify args.extra), first validate
         // them by sending SELECT 1 with the new settings; bail out on rejection.
         for q in &queries {
+            // Intercept `set completion = ...` before it reaches the server path,
+            // since completion is a client-only setting and set_args would otherwise
+            // print a help message to stderr (bypassing the TUI output pane).
+            {
+                use once_cell::sync::Lazy;
+                use regex::Regex;
+                static COMPLETION_SET_RE: Lazy<Regex> = Lazy::new(||
+                    Regex::new(r"(?i)^\s*set\s+completion\s*=").unwrap()
+                );
+                if COMPLETION_SET_RE.is_match(q) {
+                    self.push_sql_echo(q.trim());
+                    self.output.push_error("'set completion' is a client setting — use '.completion = on|off'");
+                    return;
+                }
+            }
+
             let extra_before = self.context.args.extra.clone();
             let mut test_ctx = self.context.clone();
             if set_args(&mut test_ctx, q).unwrap_or(false) {

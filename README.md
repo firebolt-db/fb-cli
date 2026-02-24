@@ -123,8 +123,10 @@ Type these directly in the REPL (or pass with `-c`):
 | `/run <query>` | Execute an inline SQL query |
 | `/benchmark [N] @<file>\|<query>` | Benchmark a query: 1 warmup + N timed runs (default N=3) |
 | `/watch [N] @<file>\|<query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
-| `set key=value;` | Set a query parameter |
+| `set key=value;` | Set a server-side query parameter |
 | `unset key;` | Remove a query parameter |
+| `.format = value` | Set client output format (e.g. `client:auto`, `JSON`) |
+| `.completion = on\|off` | Enable or disable tab completion |
 
 ### `@<file>` syntax
 
@@ -209,7 +211,7 @@ The default format is `client:auto`, which fetches results as JSON and renders t
 Time: 15.2ms
 ```
 
-Override with `--format client:vertical` or set at runtime: `set format = client:vertical;`
+Override with `--format client:vertical` or set at runtime: `.format = client:vertical`
 
 The default format is `client:auto` in all modes (interactive REPL, single-query, and pipe mode).
 
@@ -227,15 +229,29 @@ Common formats: `PSQL`, `JSON`, `JSON_Compact`, `JSONLines_Compact`, `CSV`, `CSV
 
 ### Changing Format at Runtime
 
-```sql
-set format = client:vertical;     -- client-side vertical
-set format = JSON;                 -- server-side JSON
-unset format;                      -- reset to default (client:auto)
+```
+.format = client:vertical     -- client-side vertical
+.format = JSON                -- server-side JSON
+.format =                     -- reset to default (client:auto)
+```
+
+## Client Settings
+
+Settings that only affect the CLI use the `.setting = value` syntax:
+
+```
+.format = client:auto         -- client-side rendering (default)
+.format = client:vertical     -- always vertical layout
+.format = JSON                -- server-side JSON output
+.completion = off             -- disable tab completion
+.completion = on              -- re-enable tab completion
+.format                       -- show current format
+.completion                   -- show current completion state
 ```
 
 ## Set and Unset
 
-Change query parameters at runtime without restarting:
+Change server-side query parameters at runtime without restarting:
 
 ```sql
 set database = my_db;

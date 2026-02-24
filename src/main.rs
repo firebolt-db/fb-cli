@@ -20,7 +20,7 @@ use auth::maybe_authenticate;
 use completion::schema_cache::SchemaCache;
 use completion::usage_tracker::UsageTracker;
 use context::Context;
-use query::{ErrorKind, QueryFailed, query};
+use query::{ErrorKind, QueryFailed, dot_command, query};
 use tui::TuiApp;
 
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -95,7 +95,12 @@ async fn run() -> i32 {
             let queries = query::try_split_queries(&buffer).unwrap_or_default();
             if !queries.is_empty() {
                 for q in queries {
-                    worst = worst.max(run_query(&mut context, q).await);
+                    let dotcheck = q.trim().trim_end_matches(';').trim();
+                    if dot_command(&mut context, dotcheck) {
+                        // client-side setting applied; nothing to send to server
+                    } else {
+                        worst = worst.max(run_query(&mut context, q).await);
+                    }
                 }
                 buffer.clear();
             }
@@ -106,7 +111,12 @@ async fn run() -> i32 {
             let text = format!("{};", buffer.trim());
             if let Some(queries) = query::try_split_queries(&text) {
                 for q in queries {
-                    worst = worst.max(run_query(&mut context, q).await);
+                    let dotcheck = q.trim().trim_end_matches(';').trim();
+                    if dot_command(&mut context, dotcheck) {
+                        // client-side setting applied
+                    } else {
+                        worst = worst.max(run_query(&mut context, q).await);
+                    }
                 }
             }
         }

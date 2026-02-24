@@ -162,6 +162,67 @@ fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Va
     (rows, None)
 }
 
+/// Handle client-side dot commands: `.format = value`, `.completion = on|off`, etc.
+/// Returns `true` if the input was a dot command (even if the key was unknown),
+/// `false` if the line does not start with `.`.
+pub fn dot_command(context: &mut Context, line: &str) -> bool {
+    static DOT_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\.(\w+)\s*(?:=\s*(.*?))?\s*;?\s*$").unwrap());
+
+    let line = line.trim();
+    if !line.starts_with('.') {
+        return false;
+    }
+
+    let caps = match DOT_RE.captures(line) {
+        Some(c) => c,
+        None => {
+            out_err!(context, "Invalid dot command: {}", line);
+            return true;
+        }
+    };
+
+    let key = caps.get(1).map_or("", |m| m.as_str());
+    let has_eq = line.contains('=');
+    let value = caps.get(2).map_or("", |m| m.as_str().trim());
+
+    match key {
+        "format" => {
+            if !has_eq {
+                out_err!(context, "format = {}", context.args.format);
+            } else {
+                context.args.format = if value.is_empty() {
+                    "client:auto".to_string()
+                } else {
+                    value.to_string()
+                };
+                context.update_url();
+            }
+        }
+        "completion" => {
+            if !has_eq {
+                let status = if context.args.no_completion { "off" } else { "on" };
+                out_err!(context, "completion = {}", status);
+            } else if value.is_empty() {
+                context.args.no_completion = false; // reset to default (enabled)
+            } else {
+                let val_lower = value.to_lowercase();
+                if val_lower == "on" || val_lower == "true" || val_lower == "1" {
+                    context.args.no_completion = false;
+                } else if val_lower == "off" || val_lower == "false" || val_lower == "0" {
+                    context.args.no_completion = true;
+                } else {
+                    out_err!(context, "Invalid value for .completion: '{}'. Use 'on' or 'off'.", value);
+                }
+            }
+        }
+        _ => {
+            out_err!(context, "Unknown client setting '.{}'. Available: .format, .completion", key);
+        }
+    }
+    true
+}
+
 // Set parameters via query
 pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std::error::Error>> {
     // set flag = value;
@@ -179,15 +240,9 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
     if key == "format" {
         context.args.format = String::from(value);
     } else if key == "completion" {
-        // Handle completion setting
-        let val_lower = value.to_lowercase();
-        if val_lower == "on" || val_lower == "true" || val_lower == "1" {
-            context.args.no_completion = false;
-        } else if val_lower == "off" || val_lower == "false" || val_lower == "0" {
-            context.args.no_completion = true;
-        } else {
-            out_err!(context, "Invalid value for completion: {}. Use 'on' or 'off'.", value);
-        }
+        // completion is a client-only setting; the TUI intercepts this before
+        // execute_queries runs. Here we just silently ignore it so it doesn't
+        // fall through to args.extra.
         return Ok(true);
     } else {
         let mut buf: Vec<String> = vec![];
@@ -216,10 +271,7 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
         let prefix = format!("{key}=");
         context.args.extra.retain(|e| !e.starts_with(prefix.as_str()));
         if key == "format" {
-            context.args.format = String::from("PSQL");
-        } else if key == "completion" {
-            // Reset completion to default (enabled)
-            context.args.no_completion = false;
+            context.args.format = String::from("client:auto");
         } else if key == "database" {
             context.args.database = String::from("");
         }
@@ -981,7 +1033,7 @@ mod tests {
         let query = "unset format";
         let result = unset_args(&mut context, query).unwrap();
         assert!(result);
-        assert_eq!(context.args.format, "PSQL");
+        assert_eq!(context.args.format, "client:auto");
 
         // Test with comments before UNSET command
         context.args.extra.push("test=value".to_string());
