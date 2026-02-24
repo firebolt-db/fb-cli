@@ -441,6 +441,20 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         //    keep collecting all rows for csvlens. ────────────
                         use table_renderer::{ErrorDetail, JsonLineMessage, ParsedResult, ResultColumn};
 
+                        // Non-success responses won't be in JSONLines format.
+                        // Collect the body as plain text and surface it directly.
+                        if !status.is_success() {
+                            let body = resp.text().await.unwrap_or_default();
+                            let msg = body.trim();
+                            if msg.is_empty() {
+                                out_err!(context, "Error: server returned HTTP {}", status.as_u16());
+                            } else {
+                                out_err!(context, "Error: {}", msg);
+                            }
+                            let kind = if status.as_u16() == 400 { ErrorKind::QueryError } else { ErrorKind::SystemError };
+                            error_kind = Some(kind);
+                        } else {
+
                         let mut columns: Vec<ResultColumn> = Vec::new();
                         let mut display_rows: Vec<Vec<serde_json::Value>> = Vec::new();
                         let mut all_rows: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -471,7 +485,15 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         if line.is_empty() { continue; }
 
                                         match serde_json::from_str::<JsonLineMessage>(&line) {
-                                            Err(e) => { stream_err = Some(e.to_string()); break 'stream; }
+                                            Err(e) => {
+                                                let detail = if context.args.verbose {
+                                                    format!("{} (raw: {:?})", e, line)
+                                                } else {
+                                                    e.to_string()
+                                                };
+                                                stream_err = Some(detail);
+                                                break 'stream;
+                                            }
                                             Ok(msg) => match msg {
                                                 JsonLineMessage::Start { result_columns, .. } => {
                                                     columns = result_columns;
@@ -563,10 +585,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             context.last_stats = compute_stats(context.args.concise, &statistics);
                         }
 
-                        if !status.is_success() {
-                            let kind = if status.as_u16() == 400 { ErrorKind::QueryError } else { ErrorKind::SystemError };
-                            if error_kind != Some(ErrorKind::SystemError) { error_kind = Some(kind); }
-                        }
+                        } // end else (status.is_success())
                     } else {
                         // ── Buffered path (non-interactive or server-rendered) ──
                         let body = resp.text().await?;
