@@ -295,6 +295,58 @@ fn url_decode_setting(s: &str) -> String {
     }
 }
 
+/// If the byte at `cursor_byte` in `text` is a bracket (`(`, `)`, `[`, `]`),
+/// scan forward or backward (counting nesting) and return the byte offset of
+/// the matching bracket.  Returns `None` if the cursor is not on a bracket or
+/// no match exists in the text.
+///
+/// The search deliberately ignores string/comment context for simplicity;
+/// occasional false highlights inside string literals are acceptable.
+fn find_matching_paren(text: &str, cursor_byte: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if cursor_byte >= bytes.len() {
+        return None;
+    }
+    // `same` = character at cursor (e.g. `(`).
+    // `other` = the bracket we are searching for (e.g. `)`).
+    // `forward` = search direction.
+    //
+    // In both directions: encountering `same` means more nesting (depth++),
+    // encountering `other` means less nesting (depth--); match when depth==0.
+    let (same, other, forward) = match bytes[cursor_byte] {
+        b'(' => (b'(', b')', true),
+        b')' => (b')', b'(', false),
+        b'[' => (b'[', b']', true),
+        b']' => (b']', b'[', false),
+        _ => return None,
+    };
+    let mut depth = 1i32;
+    if forward {
+        for i in (cursor_byte + 1)..bytes.len() {
+            if bytes[i] == same {
+                depth += 1;
+            } else if bytes[i] == other {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+    } else {
+        for i in (0..cursor_byte).rev() {
+            if bytes[i] == same {
+                depth += 1;
+            } else if bytes[i] == other {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn format_with_commas(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
@@ -2230,14 +2282,43 @@ impl TuiApp {
         buf: &mut ratatui::buffer::Buffer,
         area: ratatui::layout::Rect,
     ) {
+        use ratatui::style::Modifier;
+
         let lines = self.textarea.lines();
         let full_text = lines.join("\n");
         let spans = self.highlighter.highlight_to_spans(&full_text);
-        if spans.is_empty() {
+
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+
+        // Compute the byte offset of the cursor character in `full_text`.
+        let cursor_byte = {
+            let mut off = 0usize;
+            for (i, line) in lines.iter().enumerate() {
+                if i == cursor_row {
+                    off += line
+                        .char_indices()
+                        .nth(cursor_col)
+                        .map(|(b, _)| b)
+                        .unwrap_or(line.len());
+                    break;
+                }
+                off += line.len() + 1; // +1 for '\n'
+            }
+            off
+        };
+
+        // Find matching bracket for the character under the cursor, if any.
+        let paren_match_byte = find_matching_paren(&full_text, cursor_byte);
+
+        // Highlight style applied to the matching bracket.
+        let paren_style = Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD);
+
+        if spans.is_empty() && paren_match_byte.is_none() {
             return;
         }
 
-        let (cursor_row, cursor_col) = self.textarea.cursor();
         let row_scroll = self.ta_row_top as usize;
         let col_scroll = self.ta_col_top as usize;
 
@@ -2278,17 +2359,27 @@ impl TuiApp {
                     continue;
                 }
 
-                // Find the highest-priority span covering this byte position.
+                let screen_pos = ratatui::layout::Position::new(screen_x, screen_y);
+
+                // Apply syntax highlighting.
                 if let Some((_, style)) =
                     spans.iter().find(|(r, _)| r.start <= byte_pos && byte_pos < r.end)
                 {
-                    let pos = ratatui::layout::Position::new(screen_x, screen_y);
-                    if let Some(cell) = buf.cell_mut(pos) {
+                    if let Some(cell) = buf.cell_mut(screen_pos) {
                         // Patch only the foreground colour; preserve bg, modifiers etc.
                         let current = cell.style();
                         cell.set_style(current.patch(*style));
                     }
                 }
+
+                // Highlight the matching bracket (applied on top of syntax colour).
+                if Some(byte_pos) == paren_match_byte {
+                    if let Some(cell) = buf.cell_mut(screen_pos) {
+                        let current = cell.style();
+                        cell.set_style(current.patch(paren_style));
+                    }
+                }
+
                 char_col += 1;
             }
 
@@ -2765,5 +2856,53 @@ mod tests {
         assert_eq!(strip_outer_quotes(""), "");
         // Nested quotes: only outer layer stripped
         assert_eq!(strip_outer_quotes("\"'inner'\""), "'inner'");
+    }
+
+    #[test]
+    fn test_find_matching_paren_forward() {
+        // cursor on '(' at position 3 — match is ')' at position 9
+        let s = "foo(bar)baz";
+        assert_eq!(find_matching_paren(s, 3), Some(7));
+    }
+
+    #[test]
+    fn test_find_matching_paren_backward() {
+        // cursor on ')' at position 7 — match is '(' at position 3
+        let s = "foo(bar)baz";
+        assert_eq!(find_matching_paren(s, 7), Some(3));
+    }
+
+    #[test]
+    fn test_find_matching_paren_nested() {
+        // "foo(bar(baz)qux)" — cursor on outer '(' at 3, match ')' at 15
+        let s = "foo(bar(baz)qux)";
+        assert_eq!(find_matching_paren(s, 3), Some(15));
+        // cursor on inner '(' at 7, match ')' at 11
+        assert_eq!(find_matching_paren(s, 7), Some(11));
+    }
+
+    #[test]
+    fn test_find_matching_paren_no_match() {
+        // Unmatched '(' — no closing paren
+        assert_eq!(find_matching_paren("foo(bar", 3), None);
+        // Cursor not on a bracket
+        assert_eq!(find_matching_paren("foo(bar)baz", 0), None);
+        // Cursor beyond end
+        assert_eq!(find_matching_paren("foo", 10), None);
+    }
+
+    #[test]
+    fn test_find_matching_paren_square_brackets() {
+        let s = "arr[1]";
+        assert_eq!(find_matching_paren(s, 3), Some(5));
+        assert_eq!(find_matching_paren(s, 5), Some(3));
+    }
+
+    #[test]
+    fn test_find_matching_paren_multiline() {
+        // Newline between parens (joined text from textarea lines)
+        let s = "SELECT (\n  1 + 2\n)";
+        // '(' is at byte 7, ')' is at the last byte
+        assert_eq!(find_matching_paren(s, 7), Some(s.len() - 1));
     }
 }
