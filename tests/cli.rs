@@ -248,14 +248,15 @@ fn test_exit_code_on_connection_error() {
 #[test]
 fn test_exit_code_on_query_error() {
     // Test that exit code is non-zero when query returns an error (e.g., syntax error)
-    let (success, stdout, _) = run_fb(&["--core", "--concise", "SELEC INVALID SYNTAX"]);
+    let (success, stdout, stderr) = run_fb(&["--core", "--concise", "SELEC INVALID SYNTAX"]);
 
     assert!(!success, "Exit code should be non-zero when query fails");
-    // The server should return an error message in the response
+    // The server should return an error message in stdout or stderr
+    let combined = format!("{}{}", stdout, stderr);
     assert!(
-        stdout.to_lowercase().contains("error") || stdout.to_lowercase().contains("exception"),
-        "stdout should contain error message from server, got: {}",
-        stdout
+        combined.to_lowercase().contains("error") || combined.to_lowercase().contains("exception"),
+        "output should contain error message from server, got stdout: {} stderr: {}",
+        stdout, stderr
     );
 }
 

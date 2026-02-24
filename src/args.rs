@@ -57,7 +57,7 @@ pub struct Args {
     pub database: String,
 
     #[options(help = "Output format (client:auto, client:vertical, client:horizontal, PSQL, JSON, CSV, ...)")]
-    #[serde(default)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub format: String,
 
     #[options(help = "Extra settings in the form --extra <name>=<value>")]
@@ -256,12 +256,6 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
 
     if args.update_defaults {
         args.host = args.host.or(default_host);
-        if args.core {
-            args.format = args.format.or(String::from("PSQL"));
-        } else {
-            args.format = args.format.or(String::from("TabSeparatedWithNamesAndTypes"));
-        }
-
         fs::write(&config_path, serde_yaml::to_string(&args)?)?;
         return Ok(args);
     }
@@ -283,30 +277,15 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         .or(args.core.then(|| String::from("firebolt")).unwrap_or(defaults.database))
         .or(String::from("local_dev_db"));
 
-    // Detect if running in interactive mode
-    let is_interactive = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
-
     if args.core {
         args.host = args.host.or(String::from("localhost:3473"));
         args.jwt = String::from("");
-        args.format = args.format.or(String::from("PSQL"));
     } else {
-        // Apply smart defaults based on mode if format is not already set
-        let default_format = if args.format.is_empty() && defaults.format.is_empty() {
-            if is_interactive {
-                // Interactive mode: default to client-side rendering with auto display
-                String::from("client:auto")
-            } else {
-                // Non-interactive mode: default to server-side rendering with PSQL
-                String::from("PSQL")
-            }
-        } else {
-            String::new()
-        };
-
-        args.format = args.format.or(defaults.format).or(default_format);
         args.host = args.host.or(defaults.host).or(default_host);
     }
+
+    // Default to client:auto unless --format was explicitly provided.
+    args.format = args.format.or(String::from("client:auto"));
 
     if !args.extra.is_empty() {
         let mut extras = normalize_extras(defaults.extra, true)?;
