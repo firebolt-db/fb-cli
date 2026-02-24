@@ -14,9 +14,20 @@ use tokio_util::sync::CancellationToken;
 fn readable_error(body: &str) -> String {
     let trimmed = body.trim();
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        // Top-level string fields.
         for field in &["error", "message", "description", "detail"] {
             if let Some(s) = v.get(field).and_then(|v| v.as_str()) {
                 return s.to_string();
+            }
+        }
+        // `errors` array (e.g. {"errors":[{"description":"..."}]}).
+        if let Some(arr) = v.get("errors").and_then(|v| v.as_array()) {
+            let msgs: Vec<&str> = arr
+                .iter()
+                .filter_map(|e| e.get("description").and_then(|d| d.as_str()))
+                .collect();
+            if !msgs.is_empty() {
+                return msgs.join("; ");
             }
         }
         // Valid JSON but no recognised error field — return compact form.
