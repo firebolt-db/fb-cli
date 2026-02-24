@@ -2,9 +2,36 @@ use once_cell::sync::Lazy;
 use pest::Parser;
 use pest_derive::Parser;
 use regex::Regex;
+use std::fmt;
 use std::time::Instant;
 use tokio::{select, signal, task};
 use tokio_util::sync::CancellationToken;
+
+/// Distinguishes between user-caused and system/infrastructure failures.
+/// Values double as process exit codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Bad SQL, permission denied, query rejected by the engine (HTTP 200 error body or HTTP 400).
+    QueryError = 1,
+    /// Connection refused, auth failure, HTTP 4xx/5xx other than 400, response decode error.
+    SystemError = 2,
+}
+
+/// Error returned by [`query()`] that carries an [`ErrorKind`].
+/// The error message has already been printed to stderr before this is returned.
+#[derive(Debug)]
+pub struct QueryFailed(pub ErrorKind);
+
+impl fmt::Display for QueryFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            ErrorKind::QueryError => write!(f, "Query failed"),
+            ErrorKind::SystemError => write!(f, "System error"),
+        }
+    }
+}
+
+impl std::error::Error for QueryFailed {}
 
 use crate::args::normalize_extras;
 use crate::auth::authenticate_service_account;
@@ -339,7 +366,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
     // Build a cancel future: prefer the TUI's CancellationToken, fall back to SIGINT.
     let cancel = context.query_cancel.clone();
 
-    let mut query_failed = false;
+    let mut error_kind: Option<ErrorKind> = None;
 
     select! {
         _ = async {
@@ -356,7 +383,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
             if !context.args.concise {
                 out_err!(context, "^C");
             }
-            query_failed = true;
+            error_kind = Some(ErrorKind::SystemError);
         }
         response = async_resp => {
             let elapsed = start.elapsed();
@@ -499,12 +526,12 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             } else {
                                 out_err!(context, "Error: {}", e);
                             }
-                            query_failed = true;
+                            error_kind = Some(ErrorKind::SystemError);
                         } else if let Some(errs) = errors {
                             for err in errs {
                                 out_err!(context, "Error: {}", err.description);
                             }
-                            query_failed = true;
+                            error_kind = Some(ErrorKind::QueryError);
                         } else {
                             if !columns.is_empty() {
                                 if !display_emitted {
@@ -537,7 +564,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         }
 
                         if !status.is_success() {
-                            query_failed = true;
+                            let kind = if status.as_u16() == 400 { ErrorKind::QueryError } else { ErrorKind::SystemError };
+                            if error_kind != Some(ErrorKind::SystemError) { error_kind = Some(kind); }
                         }
                     } else {
                         // ── Buffered path (non-interactive or server-rendered) ──
@@ -552,6 +580,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         for error in errors {
                                             out_err!(context, "Error: {}", error.description);
                                         }
+                                        error_kind = Some(ErrorKind::QueryError);
                                     } else if !parsed.columns.is_empty() {
                                         let terminal_width = terminal_size::terminal_size()
                                             .map(|(terminal_size::Width(w), _)| w)
@@ -582,7 +611,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         }
 
                         if !status.is_success() {
-                            query_failed = true;
+                            let kind = if status.as_u16() == 400 { ErrorKind::QueryError } else { ErrorKind::SystemError };
+                            if error_kind != Some(ErrorKind::SystemError) { error_kind = Some(kind); }
                         }
                     }
                 }
@@ -592,7 +622,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     } else {
                         out_err!(context, "Failed to send the request: {}", error.to_string());
                     }
-                    query_failed = true;
+                    error_kind = Some(ErrorKind::SystemError);
                 },
             };
 
@@ -612,8 +642,8 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         }
     };
 
-    if query_failed {
-        Err("Query failed".into())
+    if let Some(kind) = error_kind {
+        Err(Box::new(QueryFailed(kind)))
     } else {
         // Track successful query for auto-completion prioritization
         if let Some(usage_tracker) = &context.usage_tracker {

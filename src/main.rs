@@ -20,7 +20,7 @@ use auth::maybe_authenticate;
 use completion::schema_cache::SchemaCache;
 use completion::usage_tracker::UsageTracker;
 use context::Context;
-use query::query;
+use query::{ErrorKind, QueryFailed, query};
 use tui::TuiApp;
 
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -28,16 +28,30 @@ pub const USER_AGENT: &str = concat!("fdb-cli/", env!("CARGO_PKG_VERSION"));
 pub const FIREBOLT_PROTOCOL_VERSION: &str = "2.3";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = get_args()?;
+async fn main() {
+    std::process::exit(run().await);
+}
+
+/// Returns the process exit code:
+///   0 — all queries succeeded
+///   1 — one or more queries failed (bad SQL, permission denied, HTTP 400)
+///   2 — system/infrastructure error (connection refused, auth failure, HTTP 4xx/5xx other than 400)
+async fn run() -> i32 {
+    let args = match get_args() {
+        Ok(a) => a,
+        Err(e) => { eprintln!("Error: {}", e); return ErrorKind::SystemError as i32; }
+    };
 
     if args.version {
         println!("fb-cli version {}", CLI_VERSION);
-        return Ok(());
+        return 0;
     }
 
     let mut context = Context::new(args);
-    maybe_authenticate(&mut context).await?;
+    if let Err(e) = maybe_authenticate(&mut context).await {
+        eprintln!("Error: {}", e);
+        return ErrorKind::SystemError as i32;
+    }
 
     let query_text = if context.args.command.is_empty() {
         context.args.query.join(" ")
@@ -47,8 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Headless mode: query provided on the command line ────────────────────
     if !query_text.is_empty() {
-        query(&mut context, query_text).await?;
-        return Ok(());
+        return match query(&mut context, query_text).await {
+            Ok(()) => 0,
+            Err(e) => exit_code_for(&e),
+        };
     }
 
     let is_tty = std::io::stdout().is_terminal() && std::io::stdin().is_terminal();
@@ -59,15 +75,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::BufRead;
         let stdin = std::io::stdin();
         let mut buffer = String::new();
-        let mut has_error = false;
+        let mut worst: i32 = 0;
 
         for line in stdin.lock().lines() {
-            let line = line?;
+            let line = match line {
+                Ok(l) => l,
+                Err(e) => { eprintln!("Error reading stdin: {}", e); return ErrorKind::SystemError as i32; }
+            };
             buffer.push_str(&line);
 
             // Handle quit/exit before appending a newline (mirrors old REPL behaviour)
             if buffer.trim() == "quit" || buffer.trim() == "exit" {
-                buffer.clear(); // don't process as SQL
+                buffer.clear();
                 break;
             }
 
@@ -76,9 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let queries = query::try_split_queries(&buffer).unwrap_or_default();
             if !queries.is_empty() {
                 for q in queries {
-                    if query(&mut context, q).await.is_err() {
-                        has_error = true;
-                    }
+                    worst = worst.max(run_query(&mut context, q).await);
                 }
                 buffer.clear();
             }
@@ -89,14 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let text = format!("{};", buffer.trim());
             if let Some(queries) = query::try_split_queries(&text) {
                 for q in queries {
-                    if query(&mut context, q).await.is_err() {
-                        has_error = true;
-                    }
+                    worst = worst.max(run_query(&mut context, q).await);
                 }
             }
         }
 
-        return if has_error { Err("One or more queries failed".into()) } else { Ok(()) };
+        return worst;
     }
 
     // ── Interactive TUI mode ─────────────────────────────────────────────────
@@ -105,11 +120,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     context.usage_tracker = Some(usage_tracker);
 
     let app = TuiApp::new(context, schema_cache);
-    let had_error = app.run().await?;
+    match app.run().await {
+        Ok(had_error) => if had_error { 1 } else { 0 },
+        Err(e) => { eprintln!("Error: {}", e); ErrorKind::SystemError as i32 }
+    }
+}
 
-    if had_error {
-        Err("One or more queries failed".into())
+/// Run a single query and return its exit code (0, 1, or 2).
+async fn run_query(context: &mut Context, q: String) -> i32 {
+    match query(context, q).await {
+        Ok(()) => 0,
+        Err(e) => exit_code_for(&e),
+    }
+}
+
+/// Map a query error to an exit code.
+/// `QueryFailed` errors have their message already printed; others are printed here.
+fn exit_code_for(e: &Box<dyn std::error::Error>) -> i32 {
+    if let Some(qf) = e.downcast_ref::<QueryFailed>() {
+        qf.0 as i32
     } else {
-        Ok(())
+        // Error propagated via `?` (auth failure, network setup, etc.) — print it now.
+        eprintln!("Error: {}", e);
+        ErrorKind::SystemError as i32
     }
 }
