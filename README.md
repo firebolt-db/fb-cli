@@ -125,7 +125,7 @@ Type these directly in the REPL (or pass with `-c`):
 | `/watch [N] @<file>\|<query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
 | `set key=value;` | Set a server-side query parameter |
 | `unset key;` | Remove a query parameter |
-| `.format = value` | Set client output format (e.g. `client:auto`, `JSON`) |
+| `.format = value` | Set client output format (e.g. `client:auto`, `client:vertical`) |
 | `.completion = on\|off` | Enable or disable tab completion |
 
 ### `@<file>` syntax
@@ -221,19 +221,21 @@ Pass any Firebolt output format name (without a `client:` prefix) to receive raw
 
 ```
 fb --format PSQL "SELECT 42"
-fb --format JSON "SELECT 42"
+fb --format JSON_Compact "SELECT 42"
 fb --format TabSeparatedWithNamesAndTypes "SELECT 42"
 ```
 
-Common formats: `PSQL`, `JSON`, `JSON_Compact`, `JSONLines_Compact`, `CSV`, `CSVWithNames`, `TabSeparatedWithNames`, `TabSeparatedWithNamesAndTypes`.
+Supported formats: `PSQL`, `JSON_Compact`, `JSON_CompactLimited`, `JSONLines_Compact`, `TabSeparatedWithNamesAndTypes`.
 
 ### Changing Format at Runtime
 
 ```
 .format = client:vertical     -- client-side vertical
-.format = JSON                -- server-side JSON
+.format = client:horizontal   -- client-side horizontal
 .format =                     -- reset to default (client:auto)
 ```
+
+For server-side formats use `--format` on the command line or `set output_format=PSQL;` at runtime.
 
 ## Client Settings
 
@@ -242,7 +244,7 @@ Settings that only affect the CLI use the `.setting = value` syntax:
 ```
 .format = client:auto         -- client-side rendering (default)
 .format = client:vertical     -- always vertical layout
-.format = JSON                -- server-side JSON output
+.format = client:horizontal   -- always horizontal layout
 .completion = off             -- disable tab completion
 .completion = on              -- re-enable tab completion
 .format                       -- show current format
@@ -287,14 +289,14 @@ Saved defaults are stored in `~/.firebolt/fb_config` and merged with any flags y
 Query results are always written to **stdout**. Error messages are written to **stderr**. Timing statistics follow the table on **stdout** for client-side formats; server-side formats produce no timing output. You can redirect them independently:
 
 ```bash
-# Save raw CSV (no stats)
-fb --core --format CSV "SELECT * FROM my_table" > results.csv
+# Save server-rendered output (no stats)
+fb --core --format TabSeparatedWithNamesAndTypes "SELECT * FROM my_table" > results.tsv
 
 # Save client-side table + stats together
-fb --core "SELECT * FROM my_table" > results.csv
+fb --core "SELECT * FROM my_table" > results.txt
 
 # Save only results, discard stats (stderr)
-fb --core "SELECT * FROM my_table" > results.csv 2>/dev/null
+fb --core "SELECT * FROM my_table" > results.txt 2>/dev/null
 ```
 
 ### JSON output
@@ -393,7 +395,8 @@ Optional arguments:
   -h, --host HOSTNAME           Hostname and port
   -d, --database DATABASE       Database name
   -f, --format FORMAT           Output format (client:auto, client:vertical,
-                                client:horizontal, PSQL, JSON, CSV, ...)
+                                client:horizontal, PSQL, JSON_Compact,
+                                JSONLines_Compact, TabSeparatedWithNamesAndTypes, ...)
   -e, --extra NAME=VALUE        Extra query parameters (repeatable)
   -l, --label LABEL             Query label for tracking
   -j, --jwt JWT                 JWT token for authentication

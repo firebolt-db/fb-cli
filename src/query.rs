@@ -177,7 +177,7 @@ pub fn dot_command(context: &mut Context, line: &str) -> bool {
     let caps = match DOT_RE.captures(line) {
         Some(c) => c,
         None => {
-            out_err!(context, "Invalid dot command: {}", line);
+            out_err!(context, "Error: invalid dot command: {}", line);
             return true;
         }
     };
@@ -190,12 +190,17 @@ pub fn dot_command(context: &mut Context, line: &str) -> bool {
         "format" => {
             if !has_eq {
                 out_err!(context, "format = {}", context.args.format);
+            } else if value.is_empty() {
+                context.args.format = "client:auto".to_string();
+                context.update_url();
+            } else if !value.starts_with("client:") {
+                out_err!(
+                    context,
+                    "Error: .format only accepts client-side formats: client:auto, client:vertical, client:horizontal. \
+                     Use --format or 'set output_format=<value>;' for server-side formats."
+                );
             } else {
-                context.args.format = if value.is_empty() {
-                    "client:auto".to_string()
-                } else {
-                    value.to_string()
-                };
+                context.args.format = value.to_string();
                 context.update_url();
             }
         }
@@ -212,12 +217,12 @@ pub fn dot_command(context: &mut Context, line: &str) -> bool {
                 } else if val_lower == "off" || val_lower == "false" || val_lower == "0" {
                     context.args.no_completion = true;
                 } else {
-                    out_err!(context, "Invalid value for .completion: '{}'. Use 'on' or 'off'.", value);
+                    out_err!(context, "Error: invalid value for .completion: '{}'. Use 'on' or 'off'.", value);
                 }
             }
         }
         _ => {
-            out_err!(context, "Unknown client setting '.{}'. Available: .format, .completion", key);
+            out_err!(context, "Error: unknown client setting '.{}'. Available: .format, .completion", key);
         }
     }
     true
@@ -239,11 +244,6 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
 
     if key == "format" {
         context.args.format = String::from(value);
-    } else if key == "completion" {
-        // completion is a client-only setting; the TUI intercepts this before
-        // execute_queries runs. Here we just silently ignore it so it doesn't
-        // fall through to args.extra.
-        return Ok(true);
     } else {
         let mut buf: Vec<String> = vec![];
         buf.push(format!("{key}={value}"));

@@ -240,6 +240,27 @@ fn complete_file_paths(partial: &str) -> Vec<crate::completion::CompletionItem> 
     dirs_list
 }
 
+/// If `set_query` looks like `set <key> = <value>` and `<key>` is a known
+/// client-side dot-command setting, return a suggestion hint string.
+/// Called after server-side validation fails so the user is nudged toward
+/// the correct syntax.
+fn dot_command_hint(set_query: &str) -> Option<String> {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static SET_KEY_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^set\s+(\w+)\s*=").unwrap()
+    });
+    let q = set_query.trim().trim_end_matches(';').trim();
+    let caps = SET_KEY_RE.captures(q)?;
+    let key = caps.get(1)?.as_str().to_lowercase();
+    match key.as_str() {
+        "completion" => Some(
+            "Use '.completion = on|off' to control client-side tab completion".to_string(),
+        ),
+        _ => None,
+    }
+}
+
 /// Expand a command alias to a full SQL query, returning `None` if the command
 /// is not a known alias.
 ///
@@ -711,7 +732,19 @@ impl TuiApp {
                 if trimmed.starts_with('.') {
                     self.history.add(trimmed.clone());
                     self.output.push_line(trimmed.clone());
+                    // Attach a temporary channel so dot_command output goes to the
+                    // output pane instead of eprintln! (which would corrupt the TUI).
+                    let (tx, mut rx) = mpsc::unbounded_channel::<TuiMsg>();
+                    self.context.tui_output_tx = Some(tx);
                     dot_command(&mut self.context, &trimmed);
+                    self.context.tui_output_tx = None;
+                    while let Ok(TuiMsg::Line(line)) = rx.try_recv() {
+                        if line.starts_with("Error: ") {
+                            self.output.push_error(&line);
+                        } else {
+                            self.output.push_ansi_text(&line);
+                        }
+                    }
                     self.completer.set_enabled(!self.context.args.no_completion);
                     self.reset_textarea();
                     return false;
@@ -1089,6 +1122,102 @@ impl TuiApp {
                         return;
                     }
                 }
+            }
+        }
+
+        // ── Dot-command completion ─────────────────────────────────────────
+        {
+            use crate::completion::{CompletionItem, usage_tracker::ItemType};
+            let (cursor_row, cursor_col) = self.textarea.cursor();
+            let first_line: String = self.textarea.lines().first().cloned().unwrap_or_default();
+
+            if cursor_row == 0 && first_line.trim_start().starts_with('.') {
+                let line_to_cursor = &first_line[..cursor_col.min(first_line.len())];
+
+                if let Some(eq_pos) = line_to_cursor.find('=') {
+                    // Case B: after '=' → complete value
+                    let key_part = line_to_cursor[..eq_pos].trim().trim_start_matches('.');
+                    let after_eq = &line_to_cursor[eq_pos + 1..];
+                    let leading_spaces = after_eq.len() - after_eq.trim_start().len();
+                    let value_col = eq_pos + 1 + leading_spaces;
+                    let partial = &line_to_cursor[value_col..];
+
+                    let candidates: &[(&str, &str)] = match key_part {
+                        "format" => &[
+                            ("client:auto",       "auto"),
+                            ("client:vertical",   "vertical"),
+                            ("client:horizontal", "horizontal"),
+                        ],
+                        "completion" => &[
+                            ("on",  "enable"),
+                            ("off", "disable"),
+                        ],
+                        _ => &[],
+                    };
+
+                    let items: Vec<CompletionItem> = candidates.iter()
+                        .filter(|(v, _)| v.to_lowercase().starts_with(&partial.to_lowercase()))
+                        .map(|(v, d)| CompletionItem {
+                            value: v.to_string(),
+                            description: d.to_string(),
+                            item_type: ItemType::Table,
+                        })
+                        .collect();
+
+                    if !items.is_empty() {
+                        let common_prefix_len = {
+                            let first = &items[0].value;
+                            items.iter().skip(1).fold(first.len(), |len, item| {
+                                first[..len].bytes().zip(item.value.bytes())
+                                    .take_while(|(a, b)| a == b).count()
+                            })
+                        };
+                        if common_prefix_len > partial.len() || items.len() == 1 {
+                            let value = items[0].value[..common_prefix_len].to_string();
+                            self.textarea.move_cursor(CursorMove::Jump(0, value_col as u16));
+                            self.textarea.delete_str(partial.len());
+                            self.textarea.insert_str(&value);
+                        } else {
+                            let cs = CompletionState::new(items, value_col, value_col, 0, false);
+                            self.completion_state = Some(cs);
+                        }
+                    }
+                    return;
+                }
+
+                // Case A: no '=' yet → complete command name
+                let items: Vec<CompletionItem> = [
+                    (".format = ",     "output format"),
+                    (".completion = ", "tab completion"),
+                ]
+                .iter()
+                .filter(|(c, _)| c.starts_with(line_to_cursor))
+                .map(|(c, d)| CompletionItem {
+                    value: c.to_string(),
+                    description: d.to_string(),
+                    item_type: ItemType::Table,
+                })
+                .collect();
+
+                if !items.is_empty() {
+                    let common_prefix_len = {
+                        let first = &items[0].value;
+                        items.iter().skip(1).fold(first.len(), |len, item| {
+                            first[..len].bytes().zip(item.value.bytes())
+                                .take_while(|(a, b)| a == b).count()
+                        })
+                    };
+                    if common_prefix_len > cursor_col || items.len() == 1 {
+                        let value = items[0].value[..common_prefix_len].to_string();
+                        self.textarea.move_cursor(CursorMove::Jump(0, 0));
+                        self.textarea.delete_str(cursor_col);
+                        self.textarea.insert_str(&value);
+                    } else {
+                        let cs = CompletionState::new(items, 0, 0, 0, false);
+                        self.completion_state = Some(cs);
+                    }
+                }
+                return;
             }
         }
 
@@ -1855,22 +1984,6 @@ impl TuiApp {
         // that change server-side parameters (i.e. modify args.extra), first validate
         // them by sending SELECT 1 with the new settings; bail out on rejection.
         for q in &queries {
-            // Intercept `set completion = ...` before it reaches the server path,
-            // since completion is a client-only setting and set_args would otherwise
-            // print a help message to stderr (bypassing the TUI output pane).
-            {
-                use once_cell::sync::Lazy;
-                use regex::Regex;
-                static COMPLETION_SET_RE: Lazy<Regex> = Lazy::new(||
-                    Regex::new(r"(?i)^\s*set\s+completion\s*=").unwrap()
-                );
-                if COMPLETION_SET_RE.is_match(q) {
-                    self.push_sql_echo(q.trim());
-                    self.output.push_error("'set completion' is a client setting — use '.completion = on|off'");
-                    return;
-                }
-            }
-
             let extra_before = self.context.args.extra.clone();
             let mut test_ctx = self.context.clone();
             if set_args(&mut test_ctx, q).unwrap_or(false) {
@@ -1879,6 +1992,9 @@ impl TuiApp {
                     if let Err(e) = validate_setting(&mut test_ctx).await {
                         self.push_sql_echo(q.trim());
                         self.output.push_error(&format!("Error: {e}"));
+                        if let Some(hint) = dot_command_hint(q) {
+                            self.output.push_error(&format!("Tip: {hint}"));
+                        }
                         return;
                     }
                 }

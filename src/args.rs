@@ -52,7 +52,7 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub database: String,
 
-    #[options(help = "Output format (client:auto, client:vertical, client:horizontal, PSQL, JSON, CSV, ...)")]
+    #[options(help = "Output format (client:auto, client:vertical, client:horizontal, PSQL, JSON_Compact, JSONLines_Compact, TabSeparatedWithNamesAndTypes, ...)")]
     #[serde(skip_serializing, skip_deserializing)]
     pub format: String,
 
