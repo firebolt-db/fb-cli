@@ -12,6 +12,7 @@ use ratatui::{
 use crate::completion::CompletionItem;
 
 /// State for an open completion popup session.
+#[allow(dead_code)]
 pub struct CompletionState {
     /// All available completion items.
     pub items: Vec<CompletionItem>,

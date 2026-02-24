@@ -425,8 +425,8 @@ mod tests {
 
     #[test]
     fn test_collect_priority_column_in_query_beats_table() {
-        let cache = Arc::new(super::super::schema_cache::SchemaCache::new(300));
-        let usage_tracker = Arc::new(UsageTracker::new(10));
+        let _cache = Arc::new(super::super::schema_cache::SchemaCache::new(300));
+        let _usage_tracker = Arc::new(UsageTracker::new(10));
         // Empty cache — just verify priority constants are ordered correctly
         assert!(PRIORITY_COLUMN_IN_QUERY > PRIORITY_PUBLIC_TABLE);
         assert!(PRIORITY_PUBLIC_TABLE > PRIORITY_SCHEMA);

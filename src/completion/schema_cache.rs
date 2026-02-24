@@ -12,11 +12,13 @@ pub struct TableMetadata {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ColumnMetadata {
     pub name: String,
     pub data_type: String,
 }
 
+#[allow(dead_code)]
 pub struct SchemaCache {
     tables: Arc<RwLock<HashMap<String, TableMetadata>>>,
     functions: Arc<RwLock<HashSet<String>>>,
@@ -61,6 +63,7 @@ impl SchemaCache {
     }
 
     /// Checks if cache is stale based on TTL
+    #[allow(dead_code)]
     pub fn is_stale(&self) -> bool {
         let last_refresh = self.last_refresh.read().unwrap();
         match *last_refresh {
@@ -86,6 +89,7 @@ impl SchemaCache {
     }
 
     /// Get all keywords matching prefix
+    #[allow(dead_code)]
     pub fn get_keywords(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_lowercase();
         self.keywords
@@ -96,6 +100,7 @@ impl SchemaCache {
     }
 
     /// Get all table names matching prefix
+    #[allow(dead_code)]
     pub fn get_tables(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_lowercase();
         let tables = self.tables.read().unwrap();
@@ -113,6 +118,7 @@ impl SchemaCache {
     }
 
     /// Get all column names matching prefix
+    #[allow(dead_code)]
     pub fn get_columns(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_lowercase();
         let tables = self.tables.read().unwrap();
@@ -129,6 +135,7 @@ impl SchemaCache {
     }
 
     /// Get all unique schema names matching prefix
+    #[allow(dead_code)]
     pub fn get_schemas(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_lowercase();
         let tables = self.tables.read().unwrap();
@@ -147,6 +154,7 @@ impl SchemaCache {
     }
 
     /// Get all function names matching prefix
+    #[allow(dead_code)]
     pub fn get_functions(&self, prefix: &str) -> Vec<String> {
         let prefix_lower = prefix.to_lowercase();
         let functions = self.functions.read().unwrap();
@@ -183,6 +191,7 @@ impl SchemaCache {
 
     /// Get all table names with their schemas matching prefix
     /// Returns Vec<(schema, table)>
+    #[allow(dead_code)]
     pub fn get_tables_with_schema(&self, prefix: &str) -> Vec<(String, String)> {
         let prefix_lower = prefix.to_lowercase();
         let tables = self.tables.read().unwrap();
@@ -240,6 +249,7 @@ impl SchemaCache {
 
     /// Get the table for a given column name
     /// Returns the first table that contains this column
+    #[allow(dead_code)]
     pub fn get_table_for_column(&self, column_name: &str) -> Option<String> {
         let tables = self.tables.read().unwrap();
         let column_lower = column_name.to_lowercase();
@@ -306,6 +316,7 @@ impl SchemaCache {
     }
 
     /// Synchronous method to get completions from cache
+    #[allow(dead_code)]
     pub fn get_completions(
         &self,
         context: super::context_detector::CompletionContext,
@@ -509,16 +520,12 @@ impl SchemaCache {
         }
 
         // Update tables cache
-        let num_tables = new_tables.len();
-        let num_columns: usize = new_tables.values().map(|t| t.columns.len()).sum();
         *self.tables.write().unwrap() = new_tables;
 
         // Parse functions
-        let mut num_functions = 0;
         match functions_result {
             Ok(functions_output) => {
                 if let Some(function_list) = Self::parse_functions(&functions_output) {
-                    num_functions = function_list.len();
                     *self.functions.write().unwrap() = function_list.into_iter().collect();
                 } else {
                     eprintln!("Warning: Failed to parse functions from schema query");

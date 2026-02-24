@@ -1,11 +1,13 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+#[allow(dead_code)]
 static KEYWORD_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(SELECT|FROM|WHERE|JOIN|INNER|LEFT|RIGHT|FULL|OUTER|ON|GROUP|ORDER|BY|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|DROP|ALTER|TABLE|DATABASE|INDEX|VIEW|AS|DISTINCT|ALL|AND|OR|NOT|IN|EXISTS|BETWEEN|LIKE|IS|NULL|CASE|WHEN|THEN|ELSE|END|WITH|RECURSIVE)\b").unwrap()
 });
 
 #[derive(Debug, PartialEq, Clone)]
+#[allow(dead_code)]
 pub enum CompletionContext {
     Keyword,           // Start of statement or after whitespace
     TableName,         // After FROM, JOIN, INTO, UPDATE
@@ -16,6 +18,7 @@ pub enum CompletionContext {
 }
 
 /// Detects what type of completion is appropriate at the given position
+#[allow(dead_code)]
 pub fn detect_context(line: &str, pos: usize) -> CompletionContext {
     // Clamp position to line length
     let pos = pos.min(line.len());
@@ -53,7 +56,7 @@ pub fn detect_context(line: &str, pos: usize) -> CompletionContext {
         Some("SELECT") => {
             // After SELECT, if we've seen other tokens (like *), we might be typing FROM
             // Check if there are non-keyword tokens after SELECT
-            let after_select = context_before
+            let _after_select = context_before
                 .split("SELECT")
                 .last()
                 .unwrap_or("")

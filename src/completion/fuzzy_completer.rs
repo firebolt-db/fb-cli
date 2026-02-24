@@ -92,6 +92,7 @@ pub struct FuzzyItem {
     /// Short description matching tab-completion labels: "table" / "column" / "function" / "schema".
     pub description: String,
     /// The logical type.
+    #[allow(dead_code)]
     pub item_type: ItemType,
     /// Text to insert into the textarea when accepted.
     pub insert_value: String,

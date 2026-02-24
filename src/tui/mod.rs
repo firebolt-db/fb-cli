@@ -41,7 +41,6 @@ use crate::highlight::SqlHighlighter;
 use crate::meta_commands::handle_meta_command;
 use crate::query::{query, set_args, try_split_queries, unset_args, validate_setting};
 use crate::viewer::open_csvlens_viewer;
-use crate::CLI_VERSION;
 
 use completion_popup::CompletionState;
 use fuzzy_popup::FuzzyState;
@@ -411,7 +410,7 @@ impl TuiApp {
     }
 
     fn make_textarea() -> TextArea<'static> {
-        let mut ta = TextArea::default();
+        let ta = TextArea::default();
         // Disable the current-line underline — terminal underlines inherit the
         // foreground colour, which would make syntax-highlighted lines look
         // inconsistent (each token segment would draw its underline in a
@@ -1922,7 +1921,7 @@ impl TuiApp {
 
     fn set_textarea_content(&mut self, content: &str) {
         let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
-        let mut ta = TextArea::new(if lines.is_empty() {
+        let ta = TextArea::new(if lines.is_empty() {
             vec![String::new()]
         } else {
             lines

@@ -1,9 +1,10 @@
 use once_cell::sync::Lazy;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use regex::Regex;
 use std::ops::Range;
 
 /// Color scheme using ANSI escape codes (for headless/non-TUI output)
+#[allow(dead_code)]
 pub struct ColorScheme {
     keyword: &'static str,
     function: &'static str,
@@ -67,6 +68,7 @@ static LINE_COMMENT_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"--[^\n]*").
 static BLOCK_COMMENT_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"/\*[\s\S]*?\*/").unwrap());
 
 // Operator pattern
+#[allow(dead_code)]
 static OPERATOR_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"[=<>!]+|[+\-*/%]|\|\||::").unwrap());
 
 /// Holds a non-overlapping list of (start, end, priority) spans.
@@ -95,7 +97,7 @@ impl SpanList {
 
     /// Collect non-overlapping byte ranges → (start, end, priority), sorted by start.
     /// When multiple spans overlap the same byte, the highest priority wins.
-    fn into_sorted_ranges(mut self) -> Vec<(usize, usize, u8)> {
+    fn into_sorted_ranges(self) -> Vec<(usize, usize, u8)> {
         if self.entries.is_empty() {
             return vec![];
         }
@@ -139,6 +141,7 @@ fn prio_to_ratatui_style(prio: u8) -> Style {
     }
 }
 
+#[allow(dead_code)]
 fn prio_to_ansi_color<'a>(prio: u8, scheme: &'a ColorScheme) -> &'a str {
     match prio {
         PRIO_COMMENT => scheme.comment,
@@ -185,6 +188,7 @@ fn compute_ranges(text: &str) -> Vec<(Range<usize>, u8)> {
 /// SQL syntax highlighter.
 /// Produces ANSI-escaped strings for headless display and ratatui `Style` spans for TUI.
 pub struct SqlHighlighter {
+    #[allow(dead_code)]
     color_scheme: ColorScheme,
     enabled: bool,
 }
@@ -198,6 +202,7 @@ impl SqlHighlighter {
     }
 
     /// Highlight SQL text by applying ANSI color codes (headless / non-TUI mode).
+    #[allow(dead_code)]
     pub fn highlight_sql(&self, line: &str) -> String {
         if !self.enabled || line.is_empty() {
             return line.to_string();

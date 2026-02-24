@@ -71,6 +71,7 @@ pub fn detect_function_at_cursor(sql: &str, cursor: usize) -> Option<String> {
     stack.into_iter().rev().find_map(|x| x)
 }
 
+#[allow(dead_code)]
 /// The byte offset in `sql` where the currently-active function name starts,
 /// or `None`.  Used to position the popup horizontally.
 pub fn func_name_start(sql: &str, cursor: usize) -> Option<usize> {

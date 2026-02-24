@@ -73,6 +73,7 @@ impl ContextAnalyzer {
         }
     }
 
+    #[allow(dead_code)]
     /// Extract the table name from a qualified column reference
     /// E.g., "users.user_id" -> Some("users")
     pub fn extract_table_from_qualified_column(qualified_column: &str) -> Option<String> {

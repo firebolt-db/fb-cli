@@ -52,6 +52,7 @@ impl OutputPane {
         self.scroll_to_bottom();
     }
 
+    #[allow(dead_code)]
     /// Push the echoed prompt line (`❯ SELECT …`).
     /// The `❯ ` prefix is rendered in green+bold; the SQL text in yellow.
     /// Continuation lines (indented with spaces) are rendered fully in yellow.
@@ -69,6 +70,7 @@ impl OutputPane {
         self.scroll_to_bottom();
     }
 
+    #[allow(dead_code)]
     /// Push the echoed prompt line with syntax highlighting.
     ///
     /// `prefix` is `"❯ "` for the first line or `"  "` for continuation lines.

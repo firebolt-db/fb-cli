@@ -83,6 +83,7 @@ impl UsageTracker {
         }
     }
 
+    #[allow(dead_code)]
     /// Check if an item name appears in any recent query
     pub fn was_used_recently(&self, name: &str) -> bool {
         let recent = self.recent_queries.read().unwrap();

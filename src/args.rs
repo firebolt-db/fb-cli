@@ -2,7 +2,6 @@ use gumdrop::Options;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::IsTerminal;
 
 use crate::utils::{config_path, init_root_path};
 
@@ -30,9 +29,6 @@ fn default_max_cell_length() -> usize {
     1000
 }
 
-fn default_true() -> bool {
-    true
-}
 
 fn default_cache_ttl() -> u64 {
     300
@@ -174,6 +170,7 @@ impl Args {
         self.get_display_mode().eq_ignore_ascii_case("auto")
     }
 
+    #[allow(dead_code)]
     /// Determine if colors should be used for syntax highlighting
     pub fn should_use_colors(&self) -> bool {
         // Check NO_COLOR environment variable (standard: no-color.org)

@@ -131,6 +131,7 @@ const INTERACTIVE_MAX_BYTES: usize = 1_048_576; // 1 MB
 
 // Limit rows for interactive display, returning a slice and an optional truncation message.
 // Bytes are estimated as the sum of JSON string lengths across all cells in a row.
+#[allow(dead_code)]
 fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Value>], Option<String>) {
     let mut byte_count = 0usize;
     for (i, row) in rows.iter().enumerate() {

@@ -22,6 +22,7 @@ pub struct CompletionItem {
     /// Short description shown in the popup (type label or schema name).
     pub description: String,
     /// The logical type of the item.
+    #[allow(dead_code)]
     pub item_type: ItemType,
 }
 
@@ -47,10 +48,12 @@ impl SqlCompleter {
         self.enabled = enabled;
     }
 
+    #[allow(dead_code)]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    #[allow(dead_code)]
     pub fn cache(&self) -> &Arc<SchemaCache> {
         &self.cache
     }
