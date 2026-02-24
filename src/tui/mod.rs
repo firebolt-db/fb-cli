@@ -39,7 +39,7 @@ use crate::completion::SqlCompleter;
 use crate::context::Context;
 use crate::highlight::SqlHighlighter;
 use crate::meta_commands::handle_meta_command;
-use crate::query::{query, try_split_queries};
+use crate::query::{query, set_args, try_split_queries, unset_args};
 use crate::viewer::open_csvlens_viewer;
 use crate::CLI_VERSION;
 
@@ -1842,6 +1842,14 @@ impl TuiApp {
     }
 
     async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
+        // Apply set/unset commands to self.context immediately so the changes
+        // persist across queries.  The spawned task will apply them again on its
+        // cloned context (harmless due to BTreeMap deduplication in normalize_extras).
+        for q in &queries {
+            let _ = set_args(&mut self.context, q);
+            let _ = unset_args(&mut self.context, q);
+        }
+
         // Echo query to output pane with syntax highlighting
         self.push_sql_echo(original_text.trim());
         self.push_custom_settings();
