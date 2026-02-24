@@ -129,38 +129,6 @@ fn format_number(n: u64) -> String {
 const INTERACTIVE_MAX_ROWS: usize = 10_000;
 const INTERACTIVE_MAX_BYTES: usize = 1_048_576; // 1 MB
 
-// Limit rows for interactive display, returning a slice and an optional truncation message.
-// Bytes are estimated as the sum of JSON string lengths across all cells in a row.
-#[allow(dead_code)]
-fn apply_output_limits(rows: &[Vec<serde_json::Value>]) -> (&[Vec<serde_json::Value>], Option<String>) {
-    let mut byte_count = 0usize;
-    for (i, row) in rows.iter().enumerate() {
-        if i >= INTERACTIVE_MAX_ROWS {
-            return (
-                &rows[..i],
-                Some(format!(
-                    "Showing {} of {} rows (use /view to see all).",
-                    format_number(i as u64),
-                    format_number(rows.len() as u64),
-                )),
-            );
-        }
-        for val in row {
-            byte_count += val.to_string().len();
-        }
-        if byte_count > INTERACTIVE_MAX_BYTES {
-            return (
-                &rows[..=i],
-                Some(format!(
-                    "Showing {} of {} rows (use /view to see all).",
-                    format_number((i + 1) as u64),
-                    format_number(rows.len() as u64),
-                )),
-            );
-        }
-    }
-    (rows, None)
-}
 
 /// Handle client-side dot commands: `.format = value`, `.completion = on|off`, etc.
 /// Returns `true` if the input was a dot command (even if the key was unknown),

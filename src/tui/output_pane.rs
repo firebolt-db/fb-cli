@@ -52,25 +52,6 @@ impl OutputPane {
         self.scroll_to_bottom();
     }
 
-    #[allow(dead_code)]
-    /// Push the echoed prompt line (`❯ SELECT …`).
-    /// The `❯ ` prefix is rendered in green+bold; the SQL text in yellow.
-    /// Continuation lines (indented with spaces) are rendered fully in yellow.
-    pub fn push_prompt(&mut self, line: impl Into<String>) {
-        let s: String = line.into();
-        let ratatui_line = if let Some(sql) = s.strip_prefix("❯ ") {
-            Line::from(vec![
-                Span::styled("❯ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(sql.to_string(), Style::default().fg(Color::Yellow)),
-            ])
-        } else {
-            Line::from(Span::styled(s, Style::default().fg(Color::Yellow)))
-        };
-        self.lines.push(OutputLine::from_line(ratatui_line));
-        self.scroll_to_bottom();
-    }
-
-    #[allow(dead_code)]
     /// Push the echoed prompt line with syntax highlighting.
     ///
     /// `prefix` is `"❯ "` for the first line or `"  "` for continuation lines.

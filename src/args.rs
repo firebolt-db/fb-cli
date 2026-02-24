@@ -158,27 +158,7 @@ impl Args {
         self.get_display_mode().eq_ignore_ascii_case("horizontal")
     }
 
-    #[allow(dead_code)]
-    pub fn is_auto_display(&self) -> bool {
-        self.get_display_mode().eq_ignore_ascii_case("auto")
-    }
 
-    #[allow(dead_code)]
-    /// Determine if colors should be used for syntax highlighting
-    pub fn should_use_colors(&self) -> bool {
-        // Check NO_COLOR environment variable (standard: no-color.org)
-        if std::env::var("NO_COLOR").is_ok() {
-            return false;
-        }
-
-        // Check command-line flag
-        if self.no_color {
-            return false;
-        }
-
-        // Default: use colors
-        true
-    }
 }
 
 pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -212,7 +192,6 @@ pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>
 }
 
 // Apply defaults and possibly update them.
-#[allow(dead_code)]
 pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
     let config_path = config_path()?;
 
@@ -484,22 +463,18 @@ mod tests {
         let mut args = Args::parse_args_default_or_exit();
 
         args.format = String::from("client:auto");
-        assert!(args.is_auto_display());
         assert!(!args.is_vertical_display());
         assert!(!args.is_horizontal_display());
 
         args.format = String::from("client:vertical");
-        assert!(!args.is_auto_display());
         assert!(args.is_vertical_display());
         assert!(!args.is_horizontal_display());
 
         args.format = String::from("client:horizontal");
-        assert!(!args.is_auto_display());
         assert!(!args.is_vertical_display());
         assert!(args.is_horizontal_display());
 
         args.format = String::from("PSQL");
-        assert!(!args.is_auto_display());
         assert!(!args.is_vertical_display());
         assert!(!args.is_horizontal_display());
     }

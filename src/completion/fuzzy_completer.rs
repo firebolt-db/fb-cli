@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::candidates::{self, collect_candidates};
 use super::schema_cache::SchemaCache;
-use super::usage_tracker::{ItemType, UsageTracker};
+use super::usage_tracker::UsageTracker;
 
 pub struct FuzzyCompleter {
     cache: Arc<SchemaCache>,
@@ -78,7 +78,6 @@ fn candidate_to_fuzzy(c: candidates::Candidate) -> FuzzyItem {
     FuzzyItem {
         label: c.display,
         description: c.description.to_string(),
-        item_type: c.item_type,
         insert_value: c.insert,
         priority: c.priority,
     }
@@ -91,9 +90,6 @@ pub struct FuzzyItem {
     pub label: String,
     /// Short description matching tab-completion labels: "table" / "column" / "function" / "schema".
     pub description: String,
-    /// The logical type.
-    #[allow(dead_code)]
-    pub item_type: ItemType,
     /// Text to insert into the textarea when accepted.
     pub insert_value: String,
     /// Priority tier used as a tiebreaker when fuzzy scores are equal.
