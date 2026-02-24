@@ -74,6 +74,20 @@ fn parse_benchmark_args(cmd: &str) -> (usize, String) {
     (3, rest)
 }
 
+/// Return the first `max_lines` lines of `sql`.
+/// If the input has more lines, an `…` line is appended so the caller can see
+/// that the content was cut.
+fn sql_preview(sql: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = sql.lines().collect();
+    if lines.len() <= max_lines {
+        lines.join("\n")
+    } else {
+        let mut preview = lines[..max_lines].to_vec();
+        preview.push("…");
+        preview.join("\n")
+    }
+}
+
 /// Parse `/watch [N] <query>` arguments.
 /// Returns `(interval_secs, query_text)` where `interval_secs` defaults to 5.
 fn parse_watch_args(cmd: &str) -> (u64, String) {
@@ -1375,7 +1389,10 @@ impl TuiApp {
             }
         };
 
-        self.execute_queries(content, queries).await;
+        // Show filename header then a truncated SQL preview (≤5 lines).
+        self.output.push_line(format!("Running: {}", path_str));
+        let preview = sql_preview(content.trim(), 5);
+        self.execute_queries(preview, queries).await;
     }
 
     /// Re-run `query_text` every `interval_secs` seconds until Ctrl+C.
@@ -2319,7 +2336,15 @@ impl TuiApp {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
 
-        let conn_info = format!(" {} | {}", host, db);
+        // Show cursor position (1-based) when the textarea is visible.
+        let cursor_pos = if !self.is_running {
+            let (row, col) = self.textarea.cursor();
+            format!("  L{}:C{} ", row + 1, col + 1)
+        } else {
+            String::new()
+        };
+
+        let conn_info = format!(" {} | {}{}", host, db, cursor_pos);
 
         // Expire flash messages older than 2 seconds.
         if let Some((_, t)) = &self.flash_message {
@@ -2337,7 +2362,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+Space fuzzy  Ctrl+V viewer  Ctrl+D exit  Ctrl+H help  Alt+F format  Shift+Drag select  Tab complete ".to_string()
+            " Ctrl+Space fuzzy  Ctrl+E editor  Ctrl+V viewer  Ctrl+D exit  Ctrl+H help  Alt+F format  Tab complete ".to_string()
         };
 
         let total = area.width as usize;
