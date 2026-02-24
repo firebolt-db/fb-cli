@@ -1832,7 +1832,7 @@ impl TuiApp {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
 
-        let conn_info = format!(" {} | {}  Shift+Drag to select", host, db);
+        let conn_info = format!(" {} | {}", host, db);
 
         // Expire flash messages older than 2 seconds.
         if let Some((_, t)) = &self.flash_message {
@@ -1850,7 +1850,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+D exit  Ctrl+V viewer  Ctrl+Space fuzzy  Tab complete  Alt+F format  Ctrl+H help ".to_string()
+            " Ctrl+Space fuzzy  Ctrl+V viewer  Ctrl+D exit  Ctrl+H help  Alt+F format  Shift+Drag select  Tab complete ".to_string()
         };
 
         let total = area.width as usize;
