@@ -532,3 +532,179 @@ fn test_pipe_mode_continues_after_error() {
     assert!(stdout.contains("10"), "first query result should appear");
     assert!(stdout.contains("30"), "third query result should appear despite middle failure");
 }
+
+// ── Transaction support ───────────────────────────────────────────────────────
+
+/// Helper: spawn fb in pipe mode and feed lines; return (success, stdout, stderr).
+fn run_pipe(extra_args: &[&str], lines: &[&str]) -> (bool, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
+        .args(extra_args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    for line in lines {
+        writeln!(stdin, "{}", line).unwrap();
+    }
+    drop(stdin);
+
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.success(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn test_transaction_begin_commit_succeeds() {
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "-f", "TabSeparatedWithNamesAndTypes"],
+        &["BEGIN;", "SELECT 42;", "COMMIT;"],
+    );
+    assert!(ok, "BEGIN/COMMIT sequence should exit 0; stderr: {}", stderr);
+    assert!(stdout.contains("42"), "SELECT inside transaction should return data");
+}
+
+#[test]
+fn test_transaction_begin_rollback_succeeds() {
+    let (ok, _stdout, stderr) = run_pipe(
+        &["--core", "-f", "TabSeparatedWithNamesAndTypes"],
+        &["BEGIN;", "SELECT 1;", "ROLLBACK;"],
+    );
+    assert!(ok, "BEGIN/ROLLBACK sequence should exit 0; stderr: {}", stderr);
+}
+
+#[test]
+fn test_transaction_id_appears_in_url_after_begin() {
+    // --verbose prints the updated URL after each response.
+    // After BEGIN the server adds Firebolt-Update-Parameters, so the next
+    // URL (printed by the verbose handler) must contain transaction_id.
+    let (ok, _stdout, stderr) = run_pipe(
+        &["--core", "--verbose", "-f", "TabSeparatedWithNamesAndTypes"],
+        &["BEGIN;", "SELECT 1;", "COMMIT;"],
+    );
+    assert!(ok, "sequence should succeed; stderr: {}", stderr);
+    assert!(
+        stderr.contains("transaction_id"),
+        "URL emitted after BEGIN must contain transaction_id; stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_transaction_id_absent_from_url_after_commit() {
+    // After COMMIT the transaction_id must be removed from the URL so that
+    // subsequent queries don't carry a stale transaction context.
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "--verbose", "-f", "TabSeparatedWithNamesAndTypes"],
+        // Extra SELECT after COMMIT: its URL line must not carry transaction_id.
+        &["BEGIN;", "SELECT 1;", "COMMIT;", "SELECT 99;"],
+    );
+    assert!(ok, "full sequence should succeed; stderr: {}", stderr);
+    assert!(stdout.contains("99"), "SELECT after COMMIT should produce output");
+
+    // Find all "URL:" lines that appear after the last "COMMIT" reference.
+    // The URL for the post-COMMIT SELECT must not carry transaction_id.
+    let lines: Vec<&str> = stderr.lines().collect();
+    let commit_pos = lines.iter().rposition(|l| l.contains("COMMIT"));
+    if let Some(pos) = commit_pos {
+        let post_commit_urls: Vec<&str> = lines[pos..]
+            .iter()
+            .filter(|l| l.starts_with("URL:"))
+            .copied()
+            .collect();
+        assert!(
+            !post_commit_urls.is_empty(),
+            "expected at least one URL line after COMMIT"
+        );
+        for url_line in &post_commit_urls {
+            assert!(
+                !url_line.contains("transaction_id"),
+                "URL after COMMIT must not carry transaction_id: {}",
+                url_line
+            );
+        }
+    }
+}
+
+#[test]
+fn test_transaction_id_absent_from_url_after_rollback() {
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "--verbose", "-f", "TabSeparatedWithNamesAndTypes"],
+        &["BEGIN;", "SELECT 1;", "ROLLBACK;", "SELECT 77;"],
+    );
+    assert!(ok, "full sequence should succeed; stderr: {}", stderr);
+    assert!(stdout.contains("77"), "SELECT after ROLLBACK should produce output");
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let rollback_pos = lines.iter().rposition(|l| l.contains("ROLLBACK"));
+    if let Some(pos) = rollback_pos {
+        let post_rollback_urls: Vec<&str> = lines[pos..]
+            .iter()
+            .filter(|l| l.starts_with("URL:"))
+            .copied()
+            .collect();
+        for url_line in &post_rollback_urls {
+            assert!(
+                !url_line.contains("transaction_id"),
+                "URL after ROLLBACK must not carry transaction_id: {}",
+                url_line
+            );
+        }
+    }
+}
+
+#[test]
+fn test_transaction_dml_commit() {
+    // Full DML cycle: insert inside transaction, commit, verify data persists.
+    let table = format!("test_tx_commit_{}", std::process::id());
+    let create = format!("CREATE TABLE {} (x INT);", table);
+    let insert = format!("INSERT INTO {} VALUES (1234);", table);
+    let select = format!("SELECT x FROM {};", table);
+    let drop   = format!("DROP TABLE {};", table);
+
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "-f", "TabSeparatedWithNamesAndTypes"],
+        &[&create, "BEGIN;", &insert, "COMMIT;", &select, &drop],
+    );
+    assert!(ok, "DML commit sequence should succeed; stderr: {}", stderr);
+    assert!(stdout.contains("1234"), "committed row must be visible after COMMIT");
+}
+
+#[test]
+fn test_transaction_dml_rollback() {
+    // Insert inside a transaction then roll back — the row must not persist.
+    let table = format!("test_tx_rollback_{}", std::process::id());
+    let create = format!("CREATE TABLE {} (x INT);", table);
+    let insert = format!("INSERT INTO {} VALUES (9999);", table);
+    let select = format!("SELECT x FROM {};", table);
+    let drop   = format!("DROP TABLE {};", table);
+
+    // All steps in one session: CREATE, BEGIN, INSERT, ROLLBACK, SELECT, DROP.
+    // The SELECT runs after the ROLLBACK so its output must not contain 9999.
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "-f", "TabSeparatedWithNamesAndTypes"],
+        &[&create, "BEGIN;", &insert, "ROLLBACK;", &select, &drop],
+    );
+    assert!(ok, "DML rollback sequence should succeed; stderr: {}", stderr);
+    assert!(!stdout.contains("9999"), "rolled-back row must not appear after ROLLBACK");
+}
+
+#[test]
+fn test_transaction_sequential_transactions() {
+    // Two independent transactions back-to-back on the same connection.
+    let (ok, stdout, stderr) = run_pipe(
+        &["--core", "-f", "TabSeparatedWithNamesAndTypes"],
+        &[
+            "BEGIN;", "SELECT 11;", "COMMIT;",
+            "BEGIN;", "SELECT 22;", "COMMIT;",
+        ],
+    );
+    assert!(ok, "sequential transactions should succeed; stderr: {}", stderr);
+    assert!(stdout.contains("11"), "first transaction result missing");
+    assert!(stdout.contains("22"), "second transaction result missing");
+}

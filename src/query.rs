@@ -1407,4 +1407,141 @@ mod tests {
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0], r#"SELECT "hello";"#);
     }
+
+    // ── Transaction parameter helpers ─────────────────────────────────────────
+
+    fn make_context() -> Context {
+        let args = get_args().unwrap();
+        Context::new(args)
+    }
+
+    #[test]
+    fn test_apply_update_parameters_single_pair() {
+        let mut ctx = make_context();
+        assert!(!ctx.in_transaction());
+        apply_update_parameters(&mut ctx, "transaction_id=abc123").unwrap();
+        assert!(ctx.in_transaction());
+        assert!(ctx.args.extra.iter().any(|e| e == "transaction_id=abc123"));
+    }
+
+    #[test]
+    fn test_apply_update_parameters_multiple_pairs() {
+        let mut ctx = make_context();
+        apply_update_parameters(&mut ctx, "transaction_id=abc123,transaction_sequence_id=1").unwrap();
+        assert!(ctx.in_transaction());
+        assert!(ctx.args.extra.iter().any(|e| e == "transaction_id=abc123"));
+        assert!(ctx.args.extra.iter().any(|e| e == "transaction_sequence_id=1"));
+    }
+
+    #[test]
+    fn test_apply_update_parameters_empty_string_is_noop() {
+        let mut ctx = make_context();
+        let before = ctx.args.extra.clone();
+        apply_update_parameters(&mut ctx, "").unwrap();
+        assert_eq!(ctx.args.extra, before);
+        assert!(!ctx.in_transaction());
+    }
+
+    #[test]
+    fn test_apply_update_parameters_trailing_comma_ignored() {
+        let mut ctx = make_context();
+        apply_update_parameters(&mut ctx, "transaction_id=x,").unwrap();
+        // trailing comma produces an empty token, which is skipped
+        assert!(ctx.in_transaction());
+        assert_eq!(ctx.args.extra.iter().filter(|e| e.starts_with("transaction_id=")).count(), 1);
+    }
+
+    #[test]
+    fn test_apply_update_parameters_preserves_existing_extras() {
+        let mut args = get_args().unwrap();
+        args.extra = vec!["custom_param=hello".to_string()];
+        let mut ctx = Context::new(args);
+        apply_update_parameters(&mut ctx, "transaction_id=abc").unwrap();
+        assert!(ctx.args.extra.iter().any(|e| e == "custom_param=hello"),
+            "pre-existing extras must be preserved");
+        assert!(ctx.in_transaction());
+    }
+
+    #[test]
+    fn test_remove_parameters_single_key() {
+        let mut ctx = make_context();
+        apply_update_parameters(&mut ctx, "transaction_id=abc123,transaction_sequence_id=1").unwrap();
+        assert!(ctx.in_transaction());
+
+        remove_parameters(&mut ctx, "transaction_id");
+        assert!(!ctx.in_transaction());
+        // sequence_id should still be present
+        assert!(ctx.args.extra.iter().any(|e| e.starts_with("transaction_sequence_id=")));
+    }
+
+    #[test]
+    fn test_remove_parameters_multiple_keys() {
+        let mut ctx = make_context();
+        apply_update_parameters(&mut ctx, "transaction_id=abc123,transaction_sequence_id=1").unwrap();
+
+        remove_parameters(&mut ctx, "transaction_id,transaction_sequence_id");
+        assert!(!ctx.in_transaction());
+        assert!(!ctx.args.extra.iter().any(|e| e.starts_with("transaction_sequence_id=")));
+    }
+
+    #[test]
+    fn test_remove_parameters_preserves_unrelated_extras() {
+        let mut args = get_args().unwrap();
+        args.extra = vec!["other_param=value".to_string()];
+        let mut ctx = Context::new(args);
+        apply_update_parameters(&mut ctx, "transaction_id=abc123").unwrap();
+
+        remove_parameters(&mut ctx, "transaction_id");
+        assert!(!ctx.in_transaction());
+        assert!(ctx.args.extra.iter().any(|e| e == "other_param=value"),
+            "unrelated extras must survive remove_parameters");
+    }
+
+    #[test]
+    fn test_remove_parameters_exact_prefix_match() {
+        // "transaction_id" removal must not affect "transaction_id_extra=..."
+        // because the prefix checked is "transaction_id=" which won't match.
+        let mut args = get_args().unwrap();
+        args.extra = vec!["transaction_id_extra=value".to_string()];
+        let mut ctx = Context::new(args);
+        apply_update_parameters(&mut ctx, "transaction_id=abc").unwrap();
+
+        remove_parameters(&mut ctx, "transaction_id");
+        assert!(!ctx.in_transaction());
+        assert!(ctx.args.extra.iter().any(|e| e == "transaction_id_extra=value"),
+            "transaction_id_extra must not be removed when only transaction_id is removed");
+    }
+
+    #[test]
+    fn test_remove_parameters_empty_string_is_noop() {
+        let mut ctx = make_context();
+        apply_update_parameters(&mut ctx, "transaction_id=abc").unwrap();
+        let before = ctx.args.extra.clone();
+        remove_parameters(&mut ctx, "");
+        assert_eq!(ctx.args.extra, before);
+    }
+
+    #[test]
+    fn test_in_transaction_lifecycle() {
+        let mut ctx = make_context();
+
+        // 1. Initially no transaction.
+        assert!(!ctx.in_transaction());
+
+        // 2. Server sends Firebolt-Update-Parameters after BEGIN.
+        apply_update_parameters(&mut ctx, "transaction_id=deadbeef,transaction_sequence_id=0").unwrap();
+        assert!(ctx.in_transaction());
+
+        // 3. Sequence counter increments mid-transaction (server-side increment).
+        apply_update_parameters(&mut ctx, "transaction_sequence_id=1").unwrap();
+        assert!(ctx.in_transaction(), "still in transaction after sequence bump");
+
+        // 4. Server sends Firebolt-Reset-Session after COMMIT/ROLLBACK.
+        remove_parameters(&mut ctx, "transaction_id,transaction_sequence_id");
+        assert!(!ctx.in_transaction(), "transaction must be cleared after reset");
+
+        // 5. A brand-new transaction can begin.
+        apply_update_parameters(&mut ctx, "transaction_id=cafebabe,transaction_sequence_id=0").unwrap();
+        assert!(ctx.in_transaction(), "second transaction must register correctly");
+    }
 }
