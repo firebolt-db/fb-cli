@@ -224,8 +224,8 @@ fn test_json_output_fully_parseable() {
 
     assert!(success);
 
-    // stderr should contain stats
-    assert!(stderr.contains("Time:"), "stderr should contain Time:");
+    // server-side format: no stats on either stream
+    assert!(!stderr.contains("Time:") && !stdout.contains("Time:"), "server-side format: no timing stats");
 
     // stdout should be valid JSON Lines - each non-empty line should be valid JSON
     let trimmed_stdout = stdout.trim();
@@ -451,11 +451,16 @@ fn test_default_format_is_client_auto() {
 
 #[test]
 fn test_stats_on_stderr_not_stdout() {
-    // Results go to stdout, timing stats go to stderr — critical for scripting
+    // Server-side format: no stats on either stream (clean output for scripting)
     let (success, stdout, stderr) = run_fb(&["--core", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 42"]);
     assert!(success);
-    assert!(!stdout.contains("Time:"), "stdout should not contain timing stats");
-    assert!(stderr.contains("Time:"), "stderr should contain timing stats");
+    assert!(!stdout.contains("Time:"), "server-side format: no timing on stdout");
+    assert!(!stderr.contains("Time:"), "server-side format: no timing on stderr");
+
+    // Client-side format: stats follow the table on stdout
+    let (success, stdout, _) = run_fb(&["--core", "SELECT 42"]);
+    assert!(success);
+    assert!(stdout.contains("Time:"), "client-side format: timing should be on stdout");
 }
 
 #[test]
@@ -465,11 +470,10 @@ fn test_concise_suppresses_stats() {
     assert!(success);
     assert!(stdout.contains("Time:"), "client-side format: timing should be on stdout");
 
-    // Server-side format: stats go to stderr (scripting-friendly)
+    // Server-side format: no stats at all (clean output for scripting)
     let (success, stdout, stderr) = run_fb(&["--core", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 1"]);
     assert!(success);
-    assert!(!stdout.contains("Time:"), "server-side format: timing should not be on stdout");
-    assert!(stderr.contains("Time:"), "server-side format: timing should be on stderr");
+    assert!(!stdout.contains("Time:") && !stderr.contains("Time:"), "server-side format: no timing stats");
 
     // With --concise: no stats anywhere
     let (success, stdout, stderr) = run_fb(&["--core", "--concise", "SELECT 1"]);

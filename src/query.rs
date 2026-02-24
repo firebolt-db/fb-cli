@@ -721,16 +721,11 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                         out!(context, "Request Id: {request_id}");
                     }
                     out!(context, "");
-                } else {
-                    // Server-side format or TUI: keep on stderr.
+                } else if context.is_tui() {
+                    // TUI with server-side format: send stats to output pane.
                     out_err!(context, "Time: {elapsed}");
                     if let Some(stats) = &context.last_stats {
                         out_err!(context, "{}", stats);
-                    }
-                    if let Some(request_id) = maybe_request_id {
-                        if !context.is_tui() {
-                            out_err!(context, "Request Id: {request_id}");
-                        }
                     }
                     context.emit_newline();
                 }
