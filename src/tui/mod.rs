@@ -123,6 +123,9 @@ fn read_file_content(path: &str) -> Result<String, String> {
 /// For `/benchmark` and `/watch`, an optional leading integer (the run count /
 /// interval) is skipped; the return value points at the first character of the
 /// actual query or `@<file>` token.
+///
+/// Only matches when SQL is on the same line as the command (space-separated).
+/// Use `slash_cmd_sql_offset` when SQL may be on the next line.
 fn find_slash_arg_col(first_line: &str) -> Option<usize> {
     if first_line.starts_with("/run ") {
         return Some("/run ".len());
@@ -139,6 +142,64 @@ fn find_slash_arg_col(first_line: &str) -> Option<usize> {
             }
             return Some(base);
         }
+    }
+    None
+}
+
+/// Return the byte offset within `full` (textarea lines joined with `\n`)
+/// where the SQL argument of a slash command starts.
+///
+/// Handles both layouts:
+///   - SQL on the same line:  `/benchmark 5 SELECT …`  → points at `S`
+///   - SQL on the next line:  `/benchmark 5\nSELECT …` → points at `S`
+///
+/// For `/benchmark` and `/watch` an optional leading integer is consumed.
+/// Returns `None` when `first_line` is not a recognised command or no SQL
+/// follows the prefix.
+fn slash_cmd_sql_offset(first_line: &str, has_next_line: bool) -> Option<usize> {
+    // (command, whether to skip an optional leading integer argument)
+    const CMDS: &[(&str, bool)] = &[
+        ("/benchmark", true),
+        ("/watch", true),
+        ("/run", false),
+    ];
+    for &(cmd, has_count) in CMDS {
+        if !first_line.starts_with(cmd) {
+            continue;
+        }
+        let after_cmd = &first_line[cmd.len()..];
+
+        if after_cmd.is_empty() {
+            // `/command` alone — SQL must be on the next line.
+            return if has_next_line { Some(first_line.len() + 1) } else { None };
+        }
+        if !after_cmd.starts_with(' ') {
+            // Not this command (e.g. `/benchmarkfoo`).
+            continue;
+        }
+
+        // Skip leading whitespace after the command name.
+        let stripped = after_cmd.trim_start();
+        let spaces = after_cmd.len() - stripped.len();
+        let mut offset = cmd.len() + spaces;
+
+        // Optionally skip a leading integer count (`/benchmark N`, `/watch N`).
+        if has_count {
+            let tok = stripped.split_whitespace().next().unwrap_or("");
+            if tok.parse::<u64>().is_ok() {
+                let after_num = &stripped[tok.len()..];
+                let more_spaces = after_num.len() - after_num.trim_start().len();
+                offset += tok.len() + more_spaces;
+            }
+        }
+
+        return if offset >= first_line.len() {
+            // The whole first line was consumed by the prefix; SQL is on the
+            // next line (or there is none).
+            if has_next_line { Some(first_line.len() + 1) } else { None }
+        } else {
+            Some(offset)
+        };
     }
     None
 }
@@ -2094,9 +2155,10 @@ impl TuiApp {
 
     /// Format the current textarea content as SQL (Alt+F).
     ///
-    /// For slash commands with a SQL argument (`/benchmark`, `/watch`), only
-    /// the SQL part after the command prefix is formatted.  `/run` takes a
-    /// file path, not SQL, so nothing is formatted in that case.
+    /// For `/benchmark`, `/watch`, and `/run` only the SQL argument is
+    /// formatted; the command prefix (including any optional numeric argument)
+    /// is preserved verbatim.  SQL on the next line after the command is
+    /// handled as well as SQL on the same line.
     fn format_sql(&mut self) {
         let full = self.textarea.lines().join("\n");
         if full.trim().is_empty() {
@@ -2104,18 +2166,11 @@ impl TuiApp {
         }
 
         let first_line = self.textarea.lines().first().map(|s| s.as_str()).unwrap_or("");
+        let has_next_line = self.textarea.lines().len() > 1;
 
-        // /run takes a file path — nothing to format.
-        if first_line.starts_with("/run ") {
-            return;
-        }
-
-        // For /benchmark and /watch, preserve the command prefix (including
-        // any optional numeric argument) and format only the SQL portion.
-        let (prefix, sql) = if let Some(arg_byte) = find_slash_arg_col(first_line) {
-            (&full[..arg_byte], &full[arg_byte..])
-        } else {
-            ("", full.as_str())
+        let (prefix, sql) = match slash_cmd_sql_offset(first_line, has_next_line) {
+            Some(offset) => (&full[..offset], &full[offset..]),
+            None => ("", full.as_str()),
         };
 
         let options = sqlformat::FormatOptions {
@@ -2926,5 +2981,57 @@ mod tests {
         let s = "SELECT (\n  1 + 2\n)";
         // '(' is at byte 7, ')' is at the last byte
         assert_eq!(find_matching_paren(s, 7), Some(s.len() - 1));
+    }
+
+    // ── slash_cmd_sql_offset ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_slash_sql_offset_same_line() {
+        // SQL immediately after command + space
+        assert_eq!(slash_cmd_sql_offset("/benchmark SELECT 1", false), Some(11));
+        assert_eq!(slash_cmd_sql_offset("/watch SELECT 1", false), Some(7));
+        assert_eq!(slash_cmd_sql_offset("/run SELECT 1", false), Some(5));
+    }
+
+    #[test]
+    fn test_slash_sql_offset_same_line_with_count() {
+        // /benchmark 5 SELECT — count is skipped
+        let full = "/benchmark 5 SELECT 1";
+        assert_eq!(slash_cmd_sql_offset("/benchmark 5 SELECT 1", false), Some(13));
+        // Verify the split is correct
+        let offset = slash_cmd_sql_offset("/benchmark 5 SELECT 1", false).unwrap();
+        assert_eq!(&full[..offset], "/benchmark 5 ");
+        assert_eq!(&full[offset..], "SELECT 1");
+    }
+
+    #[test]
+    fn test_slash_sql_offset_next_line_bare_command() {
+        // /benchmark\nSELECT — SQL on next line, no trailing space
+        let first = "/benchmark";
+        let full = "/benchmark\nSELECT 1";
+        let offset = slash_cmd_sql_offset(first, true).unwrap();
+        assert_eq!(&full[..offset], "/benchmark\n");
+        assert_eq!(&full[offset..], "SELECT 1");
+    }
+
+    #[test]
+    fn test_slash_sql_offset_next_line_with_count() {
+        // /benchmark 5\nSELECT — count on first line, SQL on second
+        let first = "/benchmark 5";
+        let full = "/benchmark 5\nSELECT 1";
+        let offset = slash_cmd_sql_offset(first, true).unwrap();
+        assert_eq!(&full[..offset], "/benchmark 5\n");
+        assert_eq!(&full[offset..], "SELECT 1");
+    }
+
+    #[test]
+    fn test_slash_sql_offset_no_match() {
+        // Plain SQL — not a slash command
+        assert_eq!(slash_cmd_sql_offset("SELECT 1", false), None);
+        // Bare command with no SQL and no next line
+        assert_eq!(slash_cmd_sql_offset("/benchmark", false), None);
+        assert_eq!(slash_cmd_sql_offset("/benchmark 5", false), None);
+        // Unknown command
+        assert_eq!(slash_cmd_sql_offset("/foo SELECT 1", false), None);
     }
 }
