@@ -764,16 +764,32 @@ impl TuiApp {
         let word_start_byte =
             byte_offset - (cursor_col - word_start_byte_in_line);
 
-        // For single-item completions, accept immediately
-        if items.len() == 1 {
-            let value = items.into_iter().next().unwrap().value;
-            let partial_len = cursor_col - word_start_byte_in_line;
+        // Find the longest common prefix of all item values.
+        let common_prefix_len = {
+            let first = &items[0].value;
+            items.iter().skip(1).fold(first.len(), |len, item| {
+                first[..len]
+                    .bytes()
+                    .zip(item.value.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            })
+        };
+        let partial_len = cursor_col - word_start_byte_in_line;
+
+        // If all items share a prefix longer than what's already typed, complete
+        // to that prefix immediately (like a single-item completion).  The user
+        // can press Tab again to open the popup for the remaining choices.
+        if common_prefix_len > partial_len || items.len() == 1 {
+            let value = items[0].value[..common_prefix_len].to_string();
+            let single = items.len() == 1;
             // Jump to word start, then delete the partial word forward, then insert.
             // (delete_str deletes FORWARD from cursor, so we must reposition first.)
             self.textarea.move_cursor(CursorMove::Jump(cursor_row as u16, word_start_byte_in_line as u16));
             self.textarea.delete_str(partial_len);
             self.textarea.insert_str(&value);
-            if next_char_is_paren {
+            // Only advance past an existing `(` when the completion is unambiguous.
+            if next_char_is_paren && single {
                 self.textarea.move_cursor(CursorMove::Forward);
             }
             return;
