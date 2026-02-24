@@ -66,6 +66,14 @@ impl CompletionState {
         }
     }
 
+    /// Jump selection directly to `index` (clamped to valid range).
+    pub fn select_at(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.selected = index;
+            self.ensure_visible();
+        }
+    }
+
     /// Move selection to the previous item (wrapping), scrolling the viewport.
     pub fn prev(&mut self) {
         if !self.items.is_empty() {

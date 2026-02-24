@@ -165,6 +165,11 @@ pub struct TuiApp {
     ta_row_top: u16,
     ta_col_top: u16,
 
+    /// Textarea screen area from the last render frame — used to hit-test mouse clicks.
+    last_textarea_area: ratatui::layout::Rect,
+    /// Completion popup screen area from the last render frame (`None` when no popup).
+    last_popup_rect: Option<ratatui::layout::Rect>,
+
     // After leaving alt-screen for csvlens we need a full redraw
     needs_clear: bool,
     should_quit: bool,
@@ -224,6 +229,8 @@ impl TuiApp {
             signature_hint: None,
             ta_row_top: 0,
             ta_col_top: 0,
+            last_textarea_area: ratatui::layout::Rect::default(),
+            last_popup_rect: None,
             needs_clear: false,
             should_quit: false,
             has_error: false,
@@ -316,7 +323,10 @@ impl TuiApp {
                     Event::Mouse(mouse) => match mouse.kind {
                         MouseEventKind::ScrollUp => self.output.scroll_up(8),
                         MouseEventKind::ScrollDown => self.output.scroll_down(8),
-                        _ => {} // ignore clicks — Shift+drag still works for terminal selection
+                        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            self.handle_mouse_click(mouse.column, mouse.row);
+                        }
+                        _ => {}
                     },
                     Event::Resize(_, _) => {} // redraw on next tick
                     _ => {}
@@ -840,6 +850,39 @@ impl TuiApp {
         self.textarea.insert_str(&selected);
         if advance {
             self.textarea.move_cursor(CursorMove::Forward);
+        }
+    }
+
+    /// Handle a left-mouse-button click at terminal position `(col, row)`.
+    ///
+    /// Priority:
+    /// 1. Click inside the completion popup → select that item and accept.
+    /// 2. Click inside the textarea → move the cursor to the clicked position.
+    fn handle_mouse_click(&mut self, col: u16, row: u16) {
+        let pos = ratatui::layout::Position::new(col, row);
+
+        // 1. Completion popup click.
+        if let Some(popup) = self.last_popup_rect {
+            if popup.contains(pos) {
+                // Border takes 1 row at the top; items start at popup.y + 1.
+                if row >= popup.y + 1 && row < popup.y + popup.height.saturating_sub(1) {
+                    let item_idx = (row - popup.y - 1) as usize;
+                    if let Some(cs) = &mut self.completion_state {
+                        cs.select_at(item_idx + cs.scroll_offset);
+                    }
+                    self.accept_completion();
+                }
+                return;
+            }
+        }
+
+        // 2. Textarea click — move cursor to the clicked character.
+        if self.last_textarea_area.contains(pos) && !self.is_running {
+            // Map screen position to content position accounting for scroll.
+            let target_row = (row - self.last_textarea_area.y) as u16 + self.ta_row_top;
+            let target_col = (col - self.last_textarea_area.x) as u16 + self.ta_col_top;
+            self.textarea.move_cursor(CursorMove::Jump(target_row, target_col));
+            self.completion_state = None;
         }
     }
 
@@ -1414,11 +1457,15 @@ impl TuiApp {
                 self.ta_col_top, cursor_col as u16, chunks[1].width,
             );
 
+            // Record textarea area for mouse-click hit testing.
+            self.last_textarea_area = chunks[1];
+
             // Apply per-token syntax highlighting to the rendered textarea buffer
             let textarea_area = chunks[1];
             self.apply_textarea_highlights(f.buffer_mut(), textarea_area);
 
             // Render completion popup if open (not during history search)
+            self.last_popup_rect = None;
             if self.history_search.is_none() {
                 if let Some(cs) = &self.completion_state {
                     if !cs.is_empty() {
@@ -1429,6 +1476,8 @@ impl TuiApp {
                             area,
                         );
                         completion_popup::render(cs, popup_rect, f);
+                        // Record for mouse-click hit testing.
+                        self.last_popup_rect = Some(popup_rect);
                     }
                 }
             }
