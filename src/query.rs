@@ -7,6 +7,24 @@ use std::time::Instant;
 use tokio::{select, signal, task};
 use tokio_util::sync::CancellationToken;
 
+/// Extract a human-readable error message from a raw server response body.
+///
+/// Tries to parse as JSON and look for common error fields; falls back to the
+/// trimmed raw text.  Accepts multi-line bodies (pretty-printed JSON objects).
+fn readable_error(body: &str) -> String {
+    let trimmed = body.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        for field in &["error", "message", "description", "detail"] {
+            if let Some(s) = v.get(field).and_then(|v| v.as_str()) {
+                return s.to_string();
+            }
+        }
+        // Valid JSON but no recognised error field — return compact form.
+        return serde_json::to_string(&v).unwrap_or_else(|_| trimmed.to_string());
+    }
+    trimmed.to_string()
+}
+
 /// Distinguishes between user-caused and system/infrastructure failures.
 /// Values double as process exit codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,15 +489,30 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         if line.is_empty() { continue; }
 
                                         match serde_json::from_str::<JsonLineMessage>(&line) {
-                                            Err(e) => {
-                                                // Show the raw line (the actual server error text)
-                                                // rather than the internal serde parse error.
-                                                let detail = if context.args.verbose {
-                                                    format!("{} (parse error: {})", line, e)
+                                            Err(parse_err) => {
+                                                // The line isn't a JSONLines message — the server
+                                                // likely sent a multi-line JSON error object.
+                                                // Drain the rest of the response so we have the
+                                                // complete body, then surface a readable message.
+                                                let mut body = line.clone();
+                                                body.push('\n');
+                                                body.push_str(&line_buf);
+                                                'drain: loop {
+                                                    match resp.chunk().await {
+                                                        Ok(Some(c)) => {
+                                                            if let Ok(s) = std::str::from_utf8(&c) {
+                                                                body.push_str(s);
+                                                            }
+                                                        }
+                                                        _ => break 'drain,
+                                                    }
+                                                }
+                                                let msg = readable_error(&body);
+                                                stream_err = Some(if context.args.verbose {
+                                                    format!("{} (parse error: {})", msg, parse_err)
                                                 } else {
-                                                    line.clone()
-                                                };
-                                                stream_err = Some(detail);
+                                                    msg
+                                                });
                                                 break 'stream;
                                             }
                                             Ok(msg) => match msg {
