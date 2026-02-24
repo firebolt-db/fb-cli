@@ -532,6 +532,10 @@ impl TuiApp {
                 Ok(TuiMsg::Progress(n)) => {
                     self.progress_rows = n;
                 }
+                Ok(TuiMsg::ApplyCmd(cmd)) => {
+                    let _ = set_args(&mut self.context, &cmd);
+                    let _ = unset_args(&mut self.context, &cmd);
+                }
                 Ok(TuiMsg::ParsedResult(result)) => {
                     if result.columns.is_empty() {
                         self.pending_schema_refresh = true;
@@ -1842,14 +1846,6 @@ impl TuiApp {
     }
 
     async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
-        // Apply set/unset commands to self.context immediately so the changes
-        // persist across queries.  The spawned task will apply them again on its
-        // cloned context (harmless due to BTreeMap deduplication in normalize_extras).
-        for q in &queries {
-            let _ = set_args(&mut self.context, q);
-            let _ = unset_args(&mut self.context, q);
-        }
-
         // Echo query to output pane with syntax highlighting
         self.push_sql_echo(original_text.trim());
         self.push_custom_settings();
