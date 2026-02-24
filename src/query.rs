@@ -295,26 +295,28 @@ pub async fn validate_setting(context: &mut Context) -> Result<(), String> {
 }
 
 /// Render a result table to a String using the display mode from context.
-fn render_table_output(
+/// Render a result table as a plain-text String using the same renderer as the
+/// TUI, so headless output matches the interactive REPL visually.
+fn render_table_plain(
     context: &Context,
     columns: &[table_renderer::ResultColumn],
     rows: &[Vec<serde_json::Value>],
     terminal_width: u16,
     max_cell_length: usize,
 ) -> String {
-    if context.args.is_horizontal_display() {
-        table_renderer::render_table(columns, rows, max_cell_length)
-    } else if context.args.is_vertical_display() {
-        table_renderer::render_table_vertical(columns, rows, terminal_width, max_cell_length)
-    } else if context.args.is_auto_display() {
-        if table_renderer::should_use_vertical_mode(columns, terminal_width, context.args.min_col_width) {
-            table_renderer::render_table_vertical(columns, rows, terminal_width, max_cell_length)
-        } else {
-            table_renderer::render_table(columns, rows, max_cell_length)
-        }
+    let tw = terminal_width.saturating_sub(1);
+    let lines = if context.args.is_vertical_display() {
+        table_renderer::render_vertical_table_to_tui_lines(columns, rows, tw, max_cell_length)
+    } else if context.args.is_horizontal_display() {
+        table_renderer::render_horizontal_forced_tui_lines(columns, rows, tw, max_cell_length)
     } else {
-        table_renderer::render_table(columns, rows, max_cell_length)
-    }
+        table_renderer::render_table_to_tui_lines(columns, rows, tw, max_cell_length)
+    };
+    lines
+        .into_iter()
+        .map(|line| line.0.into_iter().map(|s| s.text).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// In TUI mode, emit a result table as pre-styled TuiLines (no ANSI round-trip).
@@ -577,7 +579,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                                                 if context.is_tui() {
                                                                     emit_table_tui(context, &columns, &display_rows, terminal_width, max_cell);
                                                                 } else {
-                                                                    let rendered = render_table_output(context, &columns, &display_rows, terminal_width, max_cell);
+                                                                    let rendered = render_table_plain(context, &columns, &display_rows, terminal_width, max_cell);
                                                                     out!(context, "{}", rendered);
                                                                 }
                                                                 out_err!(context, "Showing first {} rows — collecting remainder for Ctrl+V / /view...",
@@ -632,7 +634,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                     if context.is_tui() {
                                         emit_table_tui(context, &columns, &all_rows, terminal_width, max_cell);
                                     } else {
-                                        let rendered = render_table_output(context, &columns, &all_rows, terminal_width, max_cell);
+                                        let rendered = render_table_plain(context, &columns, &all_rows, terminal_width, max_cell);
                                         out!(context, "{}", rendered);
                                     }
                                 } else {
@@ -681,7 +683,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                         if context.is_tui() {
                                             emit_table_tui(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
                                         } else {
-                                            let table_output = render_table_output(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
+                                            let table_output = render_table_plain(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
                                             out!(context, "{}", table_output);
                                         }
                                         context.last_stats = compute_stats(context.args.concise, &parsed.statistics);

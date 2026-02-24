@@ -211,6 +211,8 @@ Time: 15.2ms
 
 Override with `--format client:vertical` or set at runtime: `set format = client:vertical;`
 
+The default format is `client:auto` in all modes (interactive REPL, single-query, and pipe mode).
+
 ### Server-Side Rendering
 
 Pass any Firebolt output format name (without a `client:` prefix) to receive raw server-rendered output:

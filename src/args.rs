@@ -166,6 +166,7 @@ impl Args {
         self.get_display_mode().eq_ignore_ascii_case("horizontal")
     }
 
+    #[allow(dead_code)]
     pub fn is_auto_display(&self) -> bool {
         self.get_display_mode().eq_ignore_ascii_case("auto")
     }
