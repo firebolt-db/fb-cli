@@ -704,7 +704,14 @@ impl TuiApp {
                     // schema cache so new/dropped tables appear in completion.
                     // The flag is only set on success (ParsedResult is only
                     // emitted when the query completed without errors).
-                    if self.pending_schema_refresh && !self.context.args.no_completion {
+                    // Skip the refresh when a transaction is open: BEGIN also
+                    // returns zero columns, and schema queries sent inside an
+                    // open transaction produce errors on some backends.  The
+                    // refresh will happen naturally after COMMIT/ROLLBACK.
+                    if self.pending_schema_refresh
+                        && !self.context.args.no_completion
+                        && !self.context.in_transaction()
+                    {
                         self.pending_schema_refresh = false;
                         let cache = self.schema_cache.clone();
                         let mut ctx_clone = self.context.clone();
@@ -2088,6 +2095,9 @@ impl TuiApp {
                     && !e.starts_with("query_label=")
                     && !e.starts_with("advanced_mode=")
                     && !e.starts_with("output_format=")
+                    // Server-managed transaction params — never show to user
+                    && !e.starts_with("transaction_id=")
+                    && !e.starts_with("transaction_sequence_id=")
             })
             .map(|e| url_decode_setting(e))
             .collect();
