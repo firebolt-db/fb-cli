@@ -1832,7 +1832,7 @@ impl TuiApp {
         let host = &self.context.args.host;
         let db = &self.context.args.database;
 
-        let conn_info = format!(" {} | {}", host, db);
+        let conn_info = format!(" {} | {}  Shift+Drag to select", host, db);
 
         // Expire flash messages older than 2 seconds.
         if let Some((_, t)) = &self.flash_message {
