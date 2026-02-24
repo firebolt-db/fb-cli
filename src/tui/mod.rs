@@ -992,6 +992,7 @@ impl TuiApp {
             if n_runs == 1 { "" } else { "s" }
         ));
         self.push_sql_echo(query_text.trim());
+        self.push_custom_settings();
 
         // Set up channel + running state, exactly like execute_queries.
         let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
@@ -1222,18 +1223,15 @@ impl TuiApp {
         }
     }
 
-    async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
-        // Echo query to output pane with syntax highlighting
-        self.push_sql_echo(original_text.trim());
-
-        // Show custom settings (from /set commands) between query echo and result
+    /// Print custom settings (from /set commands) as a grey line after the SQL echo.
+    /// Skips URL-construction params that are never user-visible.
+    fn push_custom_settings(&mut self) {
         let display_extras: Vec<String> = self
             .context
             .args
             .extra
             .iter()
             .filter(|e| {
-                // Skip params that are always present as part of the URL construction
                 !e.starts_with("database=")
                     && !e.starts_with("format=")
                     && !e.starts_with("query_label=")
@@ -1245,6 +1243,12 @@ impl TuiApp {
         if !display_extras.is_empty() {
             self.output.push_stat(&format!("  Settings: {}", display_extras.join(", ")));
         }
+    }
+
+    async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
+        // Echo query to output pane with syntax highlighting
+        self.push_sql_echo(original_text.trim());
+        self.push_custom_settings();
 
         let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
         let cancel_token = CancellationToken::new();
