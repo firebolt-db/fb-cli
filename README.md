@@ -84,6 +84,9 @@ Enter submits the query when SQL is complete (ends with `;`). An incomplete stat
 | `Shift+Tab` | Navigate completion popup backward |
 | `Ctrl+Space` | Fuzzy schema search (tables, columns, functions) |
 | `Ctrl+V` | Open last result in interactive viewer (csvlens) |
+| `Ctrl+E` | Open current query in `$EDITOR` (falls back to `vi`) |
+| `Ctrl+Z` | Undo last edit |
+| `Ctrl+Y` | Redo |
 | `Alt+F` | Format SQL in the editor (uppercase keywords, 2-space indent) |
 | `Page Up` / `Page Down` | Scroll output pane |
 | `Ctrl+H` | Show help popup |
@@ -116,6 +119,8 @@ Type these directly in the REPL (or pass with `-c`):
 | `/view` | Open last result in csvlens viewer (same as `Ctrl+V`) |
 | `/qh [limit] [minutes]` | Show recent query history. Default: 100 rows, last 60 minutes |
 | `/benchmark [N] <query>` | Benchmark a query: 1 warmup + N timed runs (default N=3) |
+| `/run <file>` | Execute all SQL queries from a file (Tab completes the file path) |
+| `/watch [N] <query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
 | `set key=value;` | Set a query parameter |
 | `unset key;` | Remove a query parameter |
 | `quit` / `exit` | Exit the REPL |

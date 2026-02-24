@@ -74,6 +74,116 @@ fn parse_benchmark_args(cmd: &str) -> (usize, String) {
     (3, rest)
 }
 
+/// Parse `/watch [N] <query>` arguments.
+/// Returns `(interval_secs, query_text)` where `interval_secs` defaults to 5.
+fn parse_watch_args(cmd: &str) -> (u64, String) {
+    let rest = cmd
+        .strip_prefix("/watch")
+        .unwrap_or(cmd)
+        .trim()
+        .to_string();
+
+    let mut parts = rest.splitn(2, |c: char| c.is_whitespace());
+    if let Some(first) = parts.next() {
+        if let Ok(n) = first.parse::<u64>() {
+            let query = parts.next().unwrap_or("").trim().to_string();
+            return (n.max(1), query);
+        }
+    }
+    (5, rest)
+}
+
+/// Build file-path completion candidates for the partial path `partial`.
+/// Directories are listed with a trailing `/` and description `"dir"`;
+/// files with description `"file"`.  Results are sorted: directories first,
+/// then alphabetically within each group.
+fn complete_file_paths(partial: &str) -> Vec<crate::completion::CompletionItem> {
+    use crate::completion::{CompletionItem, usage_tracker::ItemType};
+    use std::path::Path;
+
+    // Expand leading `~`
+    let expanded: std::borrow::Cow<str> = if partial.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            std::borrow::Cow::Owned(format!("{}{}", home.display(), &partial[1..]))
+        } else {
+            std::borrow::Cow::Borrowed(partial)
+        }
+    } else {
+        std::borrow::Cow::Borrowed(partial)
+    };
+
+    let path = Path::new(expanded.as_ref());
+    let (dir, prefix) = if expanded.ends_with('/') || expanded.ends_with(std::path::MAIN_SEPARATOR) {
+        (path, "")
+    } else {
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let fname = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        (parent, fname)
+    };
+
+    let read_dir = std::fs::read_dir(dir).unwrap_or_else(|_| {
+        // If dir doesn't exist yet, try "." so we still return something
+        std::fs::read_dir(".").unwrap()
+    });
+
+    let mut dirs_list: Vec<CompletionItem> = Vec::new();
+    let mut files_list: Vec<CompletionItem> = Vec::new();
+
+    for entry in read_dir.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+
+        // Reconstruct the value to insert (keep the directory prefix typed so far)
+        let dir_prefix = if expanded.ends_with('/') || expanded.ends_with(std::path::MAIN_SEPARATOR) || dir == Path::new(".") && !partial.contains('/') {
+            if partial.ends_with('/') {
+                partial.to_string()
+            } else {
+                // No dir prefix typed
+                String::new()
+            }
+        } else {
+            // Preserve the directory part the user typed
+            let dir_str = path
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            if dir_str.is_empty() {
+                String::new()
+            } else {
+                format!("{}/", dir_str)
+            }
+        };
+
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            dirs_list.push(CompletionItem {
+                value: format!("{}{}/", dir_prefix, name),
+                description: "dir".to_string(),
+                item_type: ItemType::Table,
+            });
+        } else {
+            files_list.push(CompletionItem {
+                value: format!("{}{}", dir_prefix, name),
+                description: "file".to_string(),
+                item_type: ItemType::Table,
+            });
+        }
+    }
+
+    dirs_list.sort_by(|a, b| a.value.cmp(&b.value));
+    files_list.sort_by(|a, b| a.value.cmp(&b.value));
+    dirs_list.extend(files_list);
+    dirs_list
+}
+
 /// Expand a command alias to a full SQL query, returning `None` if the command
 /// is not a known alias.
 ///
@@ -181,6 +291,9 @@ pub struct TuiApp {
     /// When true, open the csvlens viewer at the top of the next event-loop tick
     /// (outside any event-handler so crossterm's global reader is fully idle).
     pending_viewer: bool,
+
+    /// When true, open $EDITOR at the top of the next event-loop tick.
+    pending_editor: bool,
 }
 
 impl TuiApp {
@@ -236,6 +349,7 @@ impl TuiApp {
             has_error: false,
             flash_message: None,
             pending_viewer: false,
+            pending_editor: false,
         }
     }
 
@@ -290,11 +404,15 @@ impl TuiApp {
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         loop {
-            // ── Launch csvlens here, before event::poll, so crossterm's global
-            //    reader is fully idle (not inside any event handler).
+            // ── Launch csvlens / $EDITOR here, before event::poll, so crossterm's
+            //    global reader is fully idle (not inside any event handler).
             if self.pending_viewer {
                 self.pending_viewer = false;
                 self.run_viewer(terminal);
+            }
+            if self.pending_editor {
+                self.pending_editor = false;
+                self.run_editor(terminal);
             }
 
             self.drain_query_output();
@@ -481,6 +599,11 @@ impl TuiApp {
             // ── Ctrl+V: open csvlens ──────────────────────────────────────
             (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.open_viewer();
+            }
+
+            // ── Ctrl+E: open in $EDITOR ───────────────────────────────────
+            (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.pending_editor = true;
             }
 
             // ── Ctrl+Space: open fuzzy schema search ─────────────────────
@@ -757,6 +880,30 @@ impl TuiApp {
             return;
         }
 
+        // ── /run <file> path completion ───────────────────────────────────
+        {
+            let (cursor_row, cursor_col) = self.textarea.cursor();
+            let lines = self.textarea.lines();
+            let first_line = lines.first().map(|s| s.as_str()).unwrap_or("");
+            if first_line.starts_with("/run ") && cursor_row == 0 {
+                let run_prefix_len = "/run ".len();
+                let partial = &first_line[run_prefix_len..cursor_col.min(first_line.len())];
+                let items = complete_file_paths(partial);
+                if !items.is_empty() {
+                    let word_start_byte = lines[..cursor_row].iter().map(|l| l.len() + 1).sum::<usize>() + run_prefix_len;
+                    let cs = CompletionState::new(
+                        items,
+                        word_start_byte,
+                        run_prefix_len,
+                        cursor_row,
+                        false,
+                    );
+                    self.completion_state = Some(cs);
+                }
+                return;
+            }
+        }
+
         // Compute current cursor position in terms of the full content
         let (cursor_row, cursor_col) = self.textarea.cursor();
         let lines = self.textarea.lines();
@@ -1006,6 +1153,22 @@ impl TuiApp {
     // ── Slash commands ────────────────────────────────────────────────────────
 
     async fn handle_slash_command(&mut self, cmd: &str) {
+        // Dispatch /watch
+        if cmd.starts_with("/watch") {
+            self.history.add(cmd.to_string());
+            let (interval_secs, query_text) = parse_watch_args(cmd);
+            self.do_watch(interval_secs, query_text).await;
+            return;
+        }
+
+        // Dispatch /run <file>
+        if cmd.starts_with("/run ") {
+            let path_str = cmd[5..].trim().to_string();
+            self.history.add(cmd.to_string());
+            self.do_run_file(&path_str).await;
+            return;
+        }
+
         // Dispatch /benchmark separately since it needs async query execution
         if cmd.starts_with("/benchmark") {
             self.history.add(cmd.to_string());
@@ -1183,6 +1346,135 @@ impl TuiApp {
         });
     }
 
+    /// Execute all SQL statements from the file at `path_str`.
+    async fn do_run_file(&mut self, path_str: &str) {
+        // Expand leading ~
+        let expanded = if path_str.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                format!("{}{}", home.display(), &path_str[1..])
+            } else {
+                path_str.to_string()
+            }
+        } else {
+            path_str.to_string()
+        };
+
+        let content = match std::fs::read_to_string(&expanded) {
+            Ok(c) => c,
+            Err(e) => {
+                self.output.push_error(&format!("Error: could not read '{}': {}", path_str, e));
+                return;
+            }
+        };
+
+        let queries = match crate::query::try_split_queries(&content) {
+            Some(q) if !q.is_empty() => q,
+            _ => {
+                self.output.push_error("Error: no queries found in file");
+                return;
+            }
+        };
+
+        self.execute_queries(content, queries).await;
+    }
+
+    /// Re-run `query_text` every `interval_secs` seconds until Ctrl+C.
+    async fn do_watch(&mut self, interval_secs: u64, query_text: String) {
+        if query_text.trim().is_empty() {
+            self.output.push_line(
+                "Usage: /watch [N] <query>  (default interval N=5 seconds)",
+            );
+            return;
+        }
+
+        self.output.push_line(format!(
+            "Watching every {}s — Ctrl+C to stop:",
+            interval_secs
+        ));
+        self.push_sql_echo(query_text.trim());
+        self.push_custom_settings();
+
+        let (tx, rx) = mpsc::unbounded_channel::<TuiMsg>();
+        let cancel_token = CancellationToken::new();
+        self.query_rx = Some(rx);
+        self.cancel_token = Some(cancel_token.clone());
+        self.is_running = true;
+        self.running_hint.clear();
+        self.progress_rows = 0;
+        self.query_start = Some(Instant::now());
+
+        let query_text = query_text.trim().to_string();
+        let ctx = self.context.clone();
+
+        tokio::spawn(async move {
+            let watch_start = Instant::now();
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut run_count = 0u64;
+
+            loop {
+                // Wait for the next tick (first tick is immediate)
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        let _ = tx.send(TuiMsg::Line("Watch stopped.".to_string()));
+                        return;
+                    }
+                    _ = interval.tick() => {}
+                }
+
+                run_count += 1;
+                let elapsed = watch_start.elapsed().as_secs();
+                let _ = tx.send(TuiMsg::Line(format!(
+                    "── watch run {} (+{}s) ──────────────────────────",
+                    run_count, elapsed
+                )));
+
+                let queries = match crate::query::try_split_queries(&query_text) {
+                    Some(q) if !q.is_empty() => q,
+                    _ => {
+                        let _ = tx.send(TuiMsg::Line("Error: could not parse query".to_string()));
+                        return;
+                    }
+                };
+
+                let (run_tx, mut run_rx) = mpsc::unbounded_channel::<TuiMsg>();
+                let mut run_ctx = ctx.clone();
+                run_ctx.tui_output_tx = Some(run_tx);
+                run_ctx.query_cancel = Some(cancel_token.clone());
+
+                let mut handle = tokio::spawn(async move {
+                    for q in queries {
+                        if crate::query::query(&mut run_ctx, q).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+
+                // Drain inner-run messages and watch for cancellation
+                loop {
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            handle.abort();
+                            let _ = tx.send(TuiMsg::Line("Watch stopped.".to_string()));
+                            return;
+                        }
+                        _ = &mut handle => {
+                            // Forward any remaining buffered messages
+                            while let Ok(msg) = run_rx.try_recv() {
+                                let _ = tx.send(msg);
+                            }
+                            break;
+                        }
+                        Some(msg) = run_rx.recv() => {
+                            let _ = tx.send(msg);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     /// Called from handle_key: validates that data is available, then queues
     /// the viewer to open at the top of the next event-loop iteration.
     fn open_viewer(&mut self) {
@@ -1197,19 +1489,18 @@ impl TuiApp {
         self.pending_viewer = true;
     }
 
-    /// Actually launches csvlens. Called at the top of event_loop, outside any
-    /// event-handler, so crossterm's global InternalEventReader is fully idle.
-    fn run_viewer(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
-        // Mirror exactly what run() does on exit: tear down raw mode + alt screen
-        // through the ratatui backend's BufWriter so everything is flushed in order.
+    /// Tear down raw mode and alternate screen so an external program can use
+    /// the terminal.  Must be paired with a call to `resume_tui`.
+    fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
         let _ = disable_raw_mode();
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
         let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
         let _ = std::io::Write::flush(terminal.backend_mut());
+    }
 
-        let result = open_csvlens_viewer(&self.context);
-
-        // Mirror exactly what run() does on entry: restore raw mode + alt screen.
+    /// Restore raw mode and alternate screen after an external program has
+    /// finished.  Pairs with `suspend_tui`.
+    fn resume_tui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
         let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
         let _ = execute!(
             terminal.backend_mut(),
@@ -1218,10 +1509,76 @@ impl TuiApp {
         let _ = enable_raw_mode();
         let _ = std::io::Write::flush(terminal.backend_mut());
         let _ = terminal.clear();
+    }
+
+    /// Actually launches csvlens. Called at the top of event_loop, outside any
+    /// event-handler, so crossterm's global InternalEventReader is fully idle.
+    fn run_viewer(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
+        Self::suspend_tui(terminal);
+        let result = open_csvlens_viewer(&self.context);
+        Self::resume_tui(terminal);
 
         if let Err(e) = result {
             self.set_flash(format!("Viewer error: {}", e));
         }
+    }
+
+    /// Open the current textarea content in `$VISUAL` / `$EDITOR` / `vi`.
+    /// Called at the top of event_loop so the terminal reader is idle.
+    fn run_editor(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
+        // Write current content to a temp file.
+        let pid = std::process::id();
+        let tmp_path = format!("/tmp/fb_edit_{}.sql", pid);
+        let content = self.textarea.lines().join("\n");
+        if let Err(e) = std::fs::write(&tmp_path, &content) {
+            self.set_flash(format!("Editor error: could not create temp file: {}", e));
+            return;
+        }
+
+        // Resolve editor command.
+        let editor_cmd = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        let mut parts = editor_cmd.split_whitespace();
+        let bin = match parts.next() {
+            Some(b) => b.to_string(),
+            None => {
+                self.set_flash("Editor error: EDITOR variable is empty");
+                let _ = std::fs::remove_file(&tmp_path);
+                return;
+            }
+        };
+        let extra_args: Vec<String> = parts.map(|s| s.to_string()).collect();
+
+        Self::suspend_tui(terminal);
+
+        let status = std::process::Command::new(&bin)
+            .args(&extra_args)
+            .arg(&tmp_path)
+            .status();
+
+        Self::resume_tui(terminal);
+
+        match status {
+            Ok(s) if s.success() => {
+                // Read the edited content back into the textarea.
+                match std::fs::read_to_string(&tmp_path) {
+                    Ok(new_content) => {
+                        let trimmed = new_content.trim_end_matches('\n').to_string();
+                        self.set_textarea_content(&trimmed);
+                    }
+                    Err(e) => {
+                        self.set_flash(format!("Editor error: could not read file: {}", e));
+                    }
+                }
+            }
+            Ok(_) => {} // Editor exited with non-zero; keep original content
+            Err(e) => {
+                self.set_flash(format!("Editor error: could not launch '{}': {}", bin, e));
+            }
+        }
+
+        let _ = std::fs::remove_file(&tmp_path);
     }
 
     /// Show a temporary error message in the status bar for ~2 seconds.
@@ -1845,8 +2202,11 @@ impl TuiApp {
             ("Ctrl+D",        "Exit"),
             ("Ctrl+C",        "Cancel input / cancel running query"),
             ("Ctrl+V",        "Open last result in csvlens viewer"),
+            ("Ctrl+E",        "Open current query in $EDITOR"),
             ("Ctrl+R",        "Reverse history search"),
             ("Ctrl+Space",    "Fuzzy schema search"),
+            ("Ctrl+Z",        "Undo last edit"),
+            ("Ctrl+Y",        "Redo"),
             ("Tab",           "Open / navigate completion popup"),
             ("Shift+Tab",     "Navigate completion popup backwards"),
             ("Alt+F",         "Format SQL (uppercase keywords, 2-space indent)"),
@@ -1858,6 +2218,8 @@ impl TuiApp {
             ("/help",              "Show this help"),
             ("/set k=v",          "Set a query parameter"),
             ("/unset k",          "Remove a query parameter"),
+            ("/run <file>",       "Execute SQL from a file (Tab completes path)"),
+            ("/watch [N] <sql>",  "Re-run query every N seconds (default 5); Ctrl+C stops"),
             ("/benchmark [N]",    "Run query N times (default 3) and report timings"),
             ("/qh [limit] [min]", "Query history (default: last 100 in 60 min)"),
         ];
