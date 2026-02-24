@@ -88,7 +88,7 @@ fn expand_command_alias(cmd: &str) -> Option<String> {
             Some(format!(
                 "SELECT * FROM information_schema.engine_user_query_history \
                  WHERE start_time > now() - interval '{since_minutes} minutes' \
-                 ORDER BY start_time DESC LIMIT {limit}"
+                 ORDER BY start_time DESC LIMIT {limit};"
             ))
         }
         _ => None,
