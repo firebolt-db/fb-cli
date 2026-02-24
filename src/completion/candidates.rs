@@ -245,6 +245,9 @@ pub fn collect_candidates(
             PRIORITY_COLUMN_OTHER
         };
 
+        let usage_count = usage_tracker.get_count(ItemType::Column, &column);
+        let usage_bonus = usage_count.min(MAX_USAGE) * USAGE_MULTIPLIER;
+
         items.push(Candidate {
             display: display.clone(),
             insert: display,
@@ -253,7 +256,7 @@ pub fn collect_candidates(
             schema: schema.clone(),
             table_name: Some(table),
             alts,
-            priority: base,
+            priority: base.saturating_add(usage_bonus),
         });
     }
 
