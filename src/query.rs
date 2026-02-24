@@ -327,109 +327,22 @@ fn compute_stats(concise: bool, statistics: &Option<serde_json::Value>) -> Optio
     })
 }
 
-/// Send a single SQL statement to the server for validation (used for SET commands).
-///
-/// Returns:
-/// - `Ok(Some(cmd))` — accepted; `cmd` is a `set key=value` string built from
-///   the `Firebolt-Update-Parameters` response header (the server's authoritative form).
-/// - `Ok(None)` — accepted but no update-params header; caller should apply the
-///   original command.
-/// - `Err(message)` — rejected; surface `message` to the user.
-async fn server_exec(context: &Context, sql: &str) -> Result<Option<String>, String> {
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let mut req = client
-        .post(context.url.clone())
-        .header("user-agent", USER_AGENT)
-        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
-        .body(sql.to_string());
-
-    if let Some(sa_token) = &context.sa_token {
-        req = req.header("authorization", format!("Bearer {}", sa_token.token));
-    }
-    if !context.args.jwt.is_empty() {
-        req = req.header("authorization", format!("Bearer {}", context.args.jwt));
-    }
-
-    let resp = req.send().await.map_err(|e| e.to_string())?;
-
-    // Capture the server's authoritative form of the setting before consuming the body.
-    let update_params: Option<String> = resp
-        .headers()
-        .get("firebolt-update-parameters")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| format!("set {}", s));
-
-    let status = resp.status();
-    let body = resp.text().await.map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        return Err(readable_error(&body));
-    }
-
-    // Also check for query-level errors in a JSONLines body.
-    if let Ok(parsed) = table_renderer::parse_jsonlines_compact(&body) {
-        if let Some(errors) = parsed.errors {
-            if !errors.is_empty() {
-                let msgs: Vec<&str> = errors.iter().map(|e| e.description.as_str()).collect();
-                return Err(msgs.join("; "));
-            }
-        }
-    }
-
-    Ok(update_params)
-}
-
 // Send query and print result.
 pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Handle set commands: validate with server for non-client-side settings,
-    // then apply locally and propagate to the TUI via ApplyCmd.
-    {
-        static SET_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r#"(?i)^(?:--[^\n]*\n|/\*[\s\S]*\*/|[ \t\n])*set +([^ =]+) *="#).unwrap()
-        });
-        if let Some(caps) = SET_KEY_RE.captures(&query_text) {
-            let key = caps.get(1).unwrap().as_str();
-            let is_client_only = key.eq_ignore_ascii_case("format")
-                || key.eq_ignore_ascii_case("completion");
-
-            // Skip server validation for localhost targets (Firebolt Core / local dev)
-            // because they don't support SET as SQL syntax.
-            let skip_validation = is_client_only
-                || context.args.host.starts_with("localhost");
-
-            let cmd_to_apply: String = if skip_validation {
-                query_text.clone()
-            } else {
-                match server_exec(context, &query_text).await {
-                    Ok(maybe_norm) => maybe_norm.unwrap_or_else(|| query_text.clone()),
-                    Err(e) => {
-                        out_err!(context, "Error: {}", e);
-                        return Err(Box::new(QueryFailed(ErrorKind::QueryError)));
-                    }
-                }
-            };
-
-            set_args(context, &cmd_to_apply)?;
-            if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
-                out_err!(context, "URL: {}", context.url);
-            }
-            if let Some(tx) = &context.tui_output_tx {
-                let _ = tx.send(crate::tui_msg::TuiMsg::ApplyCmd(cmd_to_apply));
-            }
-            return Ok(());
+    // Handle set/unset commands
+    if set_args(context, &query_text)? {
+        if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
+            out_err!(context, "URL: {}", context.url);
         }
+
+        return Ok(());
     }
 
     if unset_args(context, &query_text)? {
         if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
             out_err!(context, "URL: {}", context.url);
         }
-        if let Some(tx) = &context.tui_output_tx {
-            let _ = tx.send(crate::tui_msg::TuiMsg::ApplyCmd(query_text));
-        }
+
         return Ok(());
     }
 

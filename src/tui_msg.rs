@@ -10,9 +10,6 @@ pub enum TuiMsg {
     ParsedResult(crate::table_renderer::ParsedResult),
     /// Overwrite the running-pane hint line (e.g. benchmark run progress).
     RunHint(String),
-    /// A `set key=value` or `unset key` command that was accepted by the server
-    /// and should now be applied to the main TUI context.
-    ApplyCmd(String),
 }
 
 /// A single rendered line made up of zero or more styled spans.
