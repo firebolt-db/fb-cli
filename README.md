@@ -238,7 +238,45 @@ Saved defaults are stored in `~/.firebolt/fb_config` and merged with any flags y
 | `1` | One or more queries failed (bad SQL, permission denied, HTTP 400) |
 | `2` | System/infrastructure error (connection refused, auth failure, HTTP 4xx/5xx) |
 
-This distinction is useful in scripts:
+## Scripting
+
+### stdout vs stderr
+
+Query results are always written to **stdout**. Timing statistics and error messages are written to **stderr**. You can redirect them independently:
+
+```bash
+# Save results to a file, see stats in the terminal
+fb --core --format CSV "SELECT * FROM my_table" > results.csv
+
+# Suppress stats entirely
+fb --core --format CSV --concise "SELECT * FROM my_table" > results.csv
+
+# Capture results and stats separately
+fb --core --format CSV "SELECT * FROM my_table" > results.csv 2> stats.txt
+```
+
+### JSON output
+
+Use `JSON_Compact` for structured output that is easy to process with tools like `jq`:
+
+```bash
+fb --core --format JSON_Compact --concise "SELECT 1 AS n, 'hello' AS msg"
+# {"meta":[{"name":"n","type":"int"},{"name":"msg","type":"text"}],"data":[[1,"hello"]],...}
+
+# Extract with jq
+fb --core --format JSON_Compact --concise "SELECT count(*) AS n FROM my_table" \
+  | jq '.data[0][0]'
+```
+
+Use `JSONLines_Compact` for streaming-friendly line-delimited JSON (one message per line):
+
+```bash
+fb --core --format JSONLines_Compact --concise "SELECT 42 AS value" \
+  | grep '^{"message_type":"data"' \
+  | jq '.data[0][0]'
+```
+
+### Exit codes in scripts
 
 ```bash
 fb --core "SELECT ..."
@@ -247,6 +285,26 @@ case $? in
   1) echo "query error — check your SQL" ;;
   2) echo "system error — check connection or credentials" ;;
 esac
+```
+
+```bash
+# Fail fast on any error
+set -e
+fb --core --concise "INSERT INTO log SELECT now(), 'start';"
+fb --core --concise "SELECT count(*) FROM my_table;"
+fb --core --concise "INSERT INTO log SELECT now(), 'done';"
+```
+
+### Pipe mode
+
+When stdin is not a terminal, fb reads queries line-by-line. All queries are executed even if one fails; the exit code reflects the worst failure:
+
+```bash
+{
+  echo "SELECT 1;"
+  echo "SELECT 2;"
+  echo "SELECT 3;"
+} | fb --core --format TabSeparatedWithNamesAndTypes --concise
 ```
 
 ## Firebolt Core
