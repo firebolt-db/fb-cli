@@ -578,6 +578,16 @@ impl TuiApp {
                 self.output.scroll_down(10);
             }
 
+            // ── Undo / Redo ───────────────────────────────────────────────
+            (KeyCode::Char('z'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.textarea.undo();
+                self.completion_state = None;
+            }
+            (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.textarea.redo();
+                self.completion_state = None;
+            }
+
             // ── All other keys → textarea ─────────────────────────────────
             _ => {
                 let input = Input::from(key);
