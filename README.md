@@ -76,8 +76,10 @@ Enter submits the query when SQL is complete (ends with `;`). An incomplete stat
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit query (if SQL complete) or insert newline |
+| `Shift+Enter` / `Alt+Enter` | Always insert newline (even after `;`) |
 | `Ctrl+C` | Cancel current input, or cancel an in-flight query |
 | `Ctrl+D` | Exit |
+| `Ctrl+H` | Show / hide help popup |
 | `Ctrl+Up` / `Ctrl+Down` | Navigate history (older / newer) |
 | `Ctrl+R` | Reverse history search |
 | `Tab` | Open completion popup (or advance to next item) |
@@ -89,7 +91,6 @@ Enter submits the query when SQL is complete (ends with `;`). An incomplete stat
 | `Ctrl+Y` | Redo |
 | `Alt+F` | Format SQL in the editor (uppercase keywords, 2-space indent) |
 | `Page Up` / `Page Down` | Scroll output pane |
-| `Ctrl+H` | Show help popup |
 | `Escape` | Close any open popup |
 
 ### Tab Completion
@@ -102,7 +103,7 @@ When all suggestions share a common prefix, that prefix is completed immediately
 
 ### Ctrl+R History Search
 
-Incremental reverse search over the session history. Type to filter; `Ctrl+R` again for the next older match; `Up`/`Down` to navigate matches; `Enter` to accept; `Esc` to cancel.
+Incremental reverse search over the session history. Type to filter; `Ctrl+R` again for the next older match; `Up`/`Down` to navigate matches; `Left`/`Right` to move within the search query; `Ctrl+A` to jump to the start; `Enter` to accept; `Esc` to cancel.
 
 ### Ctrl+V Viewer
 
@@ -114,16 +115,34 @@ Type these directly in the REPL (or pass with `-c`):
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show help popup |
+| `/exit` | Exit the REPL (also: `/quit`, `exit`, `quit`) |
 | `/refresh` | Refresh the schema completion cache |
 | `/view` | Open last result in csvlens viewer (same as `Ctrl+V`) |
 | `/qh [limit] [minutes]` | Show recent query history. Default: 100 rows, last 60 minutes |
-| `/benchmark [N] <query>` | Benchmark a query: 1 warmup + N timed runs (default N=3) |
-| `/run <file>` | Execute all SQL queries from a file (Tab completes the file path) |
-| `/watch [N] <query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
+| `/run @<file>` | Execute all SQL queries from a file (Tab completes path) |
+| `/run <query>` | Execute an inline SQL query |
+| `/benchmark [N] @<file>\|<query>` | Benchmark a query: 1 warmup + N timed runs (default N=3) |
+| `/watch [N] @<file>\|<query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
 | `set key=value;` | Set a query parameter |
 | `unset key;` | Remove a query parameter |
-| `quit` / `exit` | Exit the REPL |
+
+### `@<file>` syntax
+
+`/run`, `/benchmark`, and `/watch` all accept either an inline SQL query or a reference to a file using the `@<file>` prefix:
+
+```
+/run @~/queries/report.sql
+/run SELECT 42;
+
+/benchmark 10 @query.sql
+/benchmark SELECT count(*) FROM large_table;
+
+/watch 5 @monitor.sql
+/watch 2 SELECT now();
+```
+
+Tab after `/run ` suggests `@`. Tab after `/run @` completes file names.
+Tab at `/` shows all available commands.
 
 ### `/qh` — Query History
 

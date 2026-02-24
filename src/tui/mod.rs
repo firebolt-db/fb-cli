@@ -88,6 +88,48 @@ fn sql_preview(sql: &str, max_lines: usize) -> String {
     }
 }
 
+/// Read the file at `path`, expanding a leading `~` to the home directory.
+/// Returns the file contents on success or a human-readable error string.
+fn read_file_content(path: &str) -> Result<String, String> {
+    let expanded: std::borrow::Cow<str> = if path.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            std::borrow::Cow::Owned(format!("{}{}", home.display(), &path[1..]))
+        } else {
+            std::borrow::Cow::Borrowed(path)
+        }
+    } else {
+        std::borrow::Cow::Borrowed(path)
+    };
+    std::fs::read_to_string(expanded.as_ref())
+        .map_err(|e| format!("Error: could not read '{}': {}", path, e))
+}
+
+/// Return the column index in `first_line` where the "query / file" argument
+/// starts for `/run`, `/benchmark [N]`, and `/watch [N]` commands.
+///
+/// For `/benchmark` and `/watch`, an optional leading integer (the run count /
+/// interval) is skipped; the return value points at the first character of the
+/// actual query or `@<file>` token.
+fn find_slash_arg_col(first_line: &str) -> Option<usize> {
+    if first_line.starts_with("/run ") {
+        return Some("/run ".len());
+    }
+    for prefix in ["/benchmark ", "/watch "] {
+        if let Some(rest) = first_line.strip_prefix(prefix) {
+            let base = prefix.len();
+            let first_tok = rest.split_whitespace().next().unwrap_or("");
+            if !first_tok.is_empty() && first_tok.parse::<u64>().is_ok() {
+                // Skip past the numeric token and trailing whitespace.
+                let after_num = rest[first_tok.len()..].trim_start();
+                let skip = rest.len() - after_num.len();
+                return Some(base + skip);
+            }
+            return Some(base);
+        }
+    }
+    None
+}
+
 /// Parse `/watch [N] <query>` arguments.
 /// Returns `(interval_secs, query_text)` where `interval_secs` defaults to 5.
 fn parse_watch_args(cmd: &str) -> (u64, String) {
@@ -642,8 +684,10 @@ impl TuiApp {
                 }
             }
 
-            // ── Shift+Enter: always insert newline ───────────────────────
-            (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => {
+            // ── Shift+Enter / Alt+Enter: always insert newline ───────────
+            (KeyCode::Enter, m)
+                if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
+            {
                 self.textarea.insert_newline();
             }
 
@@ -689,6 +733,8 @@ impl TuiApp {
             (KeyCode::Down, m) if m.contains(KeyModifiers::CONTROL) => {
                 if let Some(entry) = self.history.go_forward() {
                     self.set_textarea_content(&entry);
+                    self.textarea.move_cursor(CursorMove::Top);
+                    self.textarea.move_cursor(CursorMove::Head);
                 }
             }
             (KeyCode::Up, _) => {
@@ -710,6 +756,8 @@ impl TuiApp {
                 if row >= last_row {
                     if let Some(entry) = self.history.go_forward() {
                         self.set_textarea_content(&entry);
+                        self.textarea.move_cursor(CursorMove::Top);
+                        self.textarea.move_cursor(CursorMove::Head);
                     }
                 } else {
                     // Move cursor within the buffer; keep history navigation active.
@@ -810,6 +858,25 @@ impl TuiApp {
                 self.preview_history_match(&entries);
             }
 
+            // Ctrl+A: move cursor to beginning of search query
+            (KeyCode::Char('a'), m) if m.contains(KeyModifiers::CONTROL) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.cursor_to_start();
+                }
+            }
+
+            // Left / Right: navigate cursor within the search query
+            (KeyCode::Left, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.move_cursor_left();
+                }
+            }
+            (KeyCode::Right, _) => {
+                if let Some(hs) = &mut self.history_search {
+                    hs.move_cursor_right();
+                }
+            }
+
             // Printable character: append to search query
             (KeyCode::Char(c), m) if !m.contains(KeyModifiers::CONTROL) => {
                 if let Some(hs) = &mut self.history_search {
@@ -894,27 +961,99 @@ impl TuiApp {
             return;
         }
 
-        // ── /run <file> path completion ───────────────────────────────────
+        // ── Slash-command completion ──────────────────────────────────────────
         {
+            use crate::completion::{CompletionItem, usage_tracker::ItemType};
             let (cursor_row, cursor_col) = self.textarea.cursor();
-            let lines = self.textarea.lines();
-            let first_line = lines.first().map(|s| s.as_str()).unwrap_or("");
-            if first_line.starts_with("/run ") && cursor_row == 0 {
-                let run_prefix_len = "/run ".len();
-                let partial = &first_line[run_prefix_len..cursor_col.min(first_line.len())];
-                let items = complete_file_paths(partial);
-                if !items.is_empty() {
-                    let word_start_byte = lines[..cursor_row].iter().map(|l| l.len() + 1).sum::<usize>() + run_prefix_len;
-                    let cs = CompletionState::new(
-                        items,
-                        word_start_byte,
-                        run_prefix_len,
-                        cursor_row,
-                        false,
-                    );
-                    self.completion_state = Some(cs);
+            // Owned copy so we can borrow self.textarea mutably later.
+            let first_line: String = self.textarea.lines().first().cloned().unwrap_or_default();
+
+            if cursor_row == 0 && first_line.starts_with('/') {
+                let line_to_cursor = &first_line[..cursor_col.min(first_line.len())];
+
+                // Case A: no space before cursor → complete the command name itself.
+                if !line_to_cursor.contains(' ') {
+                    let all_cmds: &[(&str, &str)] = &[
+                        ("/benchmark", "cmd"),
+                        ("/exit",      "cmd"),
+                        ("/qh",        "cmd"),
+                        ("/refresh",   "cmd"),
+                        ("/run",       "cmd"),
+                        ("/view",      "cmd"),
+                        ("/watch",     "cmd"),
+                    ];
+                    let items: Vec<CompletionItem> = all_cmds.iter()
+                        .filter(|(c, _)| c.starts_with(line_to_cursor))
+                        .map(|(c, d)| CompletionItem {
+                            value: format!("{} ", c),
+                            description: d.to_string(),
+                            item_type: ItemType::Table,
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        let common_prefix_len = {
+                            let first = &items[0].value;
+                            items.iter().skip(1).fold(first.len(), |len, item| {
+                                first[..len].bytes().zip(item.value.bytes())
+                                    .take_while(|(a, b)| a == b).count()
+                            })
+                        };
+                        if common_prefix_len > cursor_col || items.len() == 1 {
+                            let value = items[0].value[..common_prefix_len].to_string();
+                            self.textarea.move_cursor(CursorMove::Jump(0, 0));
+                            self.textarea.delete_str(cursor_col);
+                            self.textarea.insert_str(&value);
+                        } else {
+                            let cs = CompletionState::new(items, 0, 0, 0, false);
+                            self.completion_state = Some(cs);
+                        }
+                    }
+                    return;
                 }
-                return;
+
+                // Case B: space found → @file argument completion for /run, /benchmark, /watch.
+                if let Some(arg_col) = find_slash_arg_col(&first_line) {
+                    if cursor_col >= arg_col {
+                        let partial = &first_line[arg_col..cursor_col.min(first_line.len())];
+
+                        if partial.starts_with('@') {
+                            // File path completion after the '@' prefix.
+                            let file_partial = &partial[1..];
+                            let items = complete_file_paths(file_partial);
+                            if !items.is_empty() {
+                                let file_start_col = arg_col + 1;
+                                let common_prefix_len = {
+                                    let first = &items[0].value;
+                                    items.iter().skip(1).fold(first.len(), |len, item| {
+                                        first[..len].bytes().zip(item.value.bytes())
+                                            .take_while(|(a, b)| a == b).count()
+                                    })
+                                };
+                                if common_prefix_len > file_partial.len() || items.len() == 1 {
+                                    let value = items[0].value[..common_prefix_len].to_string();
+                                    self.textarea.move_cursor(CursorMove::Jump(0, file_start_col as u16));
+                                    self.textarea.delete_str(file_partial.len());
+                                    self.textarea.insert_str(&value);
+                                } else {
+                                    let cs = CompletionState::new(
+                                        items, file_start_col, file_start_col, 0, false,
+                                    );
+                                    self.completion_state = Some(cs);
+                                }
+                            }
+                        } else if partial.is_empty() {
+                            // Suggest '@' to indicate file mode.
+                            let items = vec![CompletionItem {
+                                value: "@".to_string(),
+                                description: "file".to_string(),
+                                item_type: ItemType::Table,
+                            }];
+                            let cs = CompletionState::new(items, arg_col, arg_col, 0, false);
+                            self.completion_state = Some(cs);
+                        }
+                        return;
+                    }
+                }
             }
         }
 
@@ -1167,33 +1306,73 @@ impl TuiApp {
     // ── Slash commands ────────────────────────────────────────────────────────
 
     async fn handle_slash_command(&mut self, cmd: &str) {
-        // Dispatch /watch
-        if cmd.starts_with("/watch") {
-            self.history.add(cmd.to_string());
-            let (interval_secs, query_text) = parse_watch_args(cmd);
-            self.do_watch(interval_secs, query_text).await;
+        // /exit and /quit
+        if cmd == "/exit" || cmd == "/quit" {
+            self.should_quit = true;
             return;
         }
 
-        // Dispatch /run <file>
-        if cmd.starts_with("/run ") {
-            let path_str = cmd[5..].trim().to_string();
+        // /run — accepts inline SQL or @<file>
+        if cmd.starts_with("/run") {
+            let arg = cmd["/run".len()..].trim();
+            if arg.is_empty() {
+                self.output.push_line("Usage: /run @<file>  or  /run <query>");
+                return;
+            }
             self.history.add(cmd.to_string());
-            self.do_run_file(&path_str).await;
+            if let Some(path) = arg.strip_prefix('@') {
+                match read_file_content(path) {
+                    Ok(content) => match crate::query::try_split_queries(&content) {
+                        Some(queries) if !queries.is_empty() => {
+                            self.output.push_line(format!("/run @{}", path));
+                            let preview = sql_preview(content.trim(), 5);
+                            self.execute_queries(preview, queries).await;
+                        }
+                        _ => self.output.push_error("Error: no queries found in file"),
+                    },
+                    Err(e) => self.output.push_error(&e),
+                }
+            } else {
+                match crate::query::try_split_queries(arg) {
+                    Some(queries) if !queries.is_empty() => {
+                        self.execute_queries(arg.to_string(), queries).await;
+                    }
+                    _ => self.output.push_error(&format!("Error: could not parse query: {}", arg)),
+                }
+            }
             return;
         }
 
-        // Dispatch /benchmark separately since it needs async query execution
+        // /benchmark — accepts inline SQL or @<file>
         if cmd.starts_with("/benchmark") {
             self.history.add(cmd.to_string());
             let (n_runs, query_text) = parse_benchmark_args(cmd);
-            self.do_benchmark(n_runs, query_text).await;
+            let resolved = if let Some(path) = query_text.strip_prefix('@') {
+                match read_file_content(path) {
+                    Ok(c) => c.trim().to_string(),
+                    Err(e) => { self.output.push_error(&e); return; }
+                }
+            } else { query_text };
+            self.do_benchmark(n_runs, resolved).await;
             return;
         }
 
-        // Dispatch command aliases (e.g. /qh)
+        // /watch — accepts inline SQL or @<file>
+        if cmd.starts_with("/watch") {
+            self.history.add(cmd.to_string());
+            let (interval_secs, query_text) = parse_watch_args(cmd);
+            let resolved = if let Some(path) = query_text.strip_prefix('@') {
+                match read_file_content(path) {
+                    Ok(c) => c.trim().to_string(),
+                    Err(e) => { self.output.push_error(&e); return; }
+                }
+            } else { query_text };
+            self.do_watch(interval_secs, resolved).await;
+            return;
+        }
+
+        // Command aliases (e.g. /qh)
         if let Some(expanded) = expand_command_alias(cmd) {
-            // Execute the expanded SQL query as if the user typed it
             if let Some(queries) = crate::query::try_split_queries(&expanded) {
                 self.history.add(cmd.to_string());
                 self.execute_queries(expanded, queries).await;
@@ -1206,7 +1385,6 @@ impl TuiApp {
         match cmd {
             "/view" => self.open_viewer(),
             "/refresh" | "/refresh_cache" => self.do_refresh(),
-            "/help" => self.show_help(),
             _ => {
                 match handle_meta_command(&mut self.context, cmd) {
                     Ok(true) => {}
@@ -1358,41 +1536,6 @@ impl TuiApp {
             }
             // `tx` dropped here → channel disconnects → is_running = false
         });
-    }
-
-    /// Execute all SQL statements from the file at `path_str`.
-    async fn do_run_file(&mut self, path_str: &str) {
-        // Expand leading ~
-        let expanded = if path_str.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
-                format!("{}{}", home.display(), &path_str[1..])
-            } else {
-                path_str.to_string()
-            }
-        } else {
-            path_str.to_string()
-        };
-
-        let content = match std::fs::read_to_string(&expanded) {
-            Ok(c) => c,
-            Err(e) => {
-                self.output.push_error(&format!("Error: could not read '{}': {}", path_str, e));
-                return;
-            }
-        };
-
-        let queries = match crate::query::try_split_queries(&content) {
-            Some(q) if !q.is_empty() => q,
-            _ => {
-                self.output.push_error("Error: no queries found in file");
-                return;
-            }
-        };
-
-        // Show filename header then a truncated SQL preview (≤5 lines).
-        self.output.push_line(format!("Running: {}", path_str));
-        let preview = sql_preview(content.trim(), 5);
-        self.execute_queries(preview, queries).await;
     }
 
     /// Re-run `query_text` every `interval_secs` seconds until Ctrl+C.
@@ -1617,34 +1760,6 @@ impl TuiApp {
                 eprintln!("Failed to refresh schema cache: {}", e);
             }
         });
-    }
-
-    fn show_help(&mut self) {
-        self.output.push_ansi_text(
-            "Keyboard shortcuts:\n\
-             Ctrl+V          - Open last result in csvlens viewer\n\
-             Ctrl+R          - Reverse history search\n\
-             Ctrl+Space      - Fuzzy schema search\n\
-             Tab             - Open / navigate completion popup\n\
-             Shift+Tab       - Navigate completion popup backwards\n\
-             Alt+F           - Format SQL\n\
-             Ctrl+D          - Exit\n\
-             Ctrl+C          - Cancel current input (or running query)\n\
-             Page Up/Down    - Scroll output\n\
-             \n\
-             Special commands:\n\
-             \\refresh                    - Manually refresh schema cache\n\
-             \\benchmark [N] <query>      - Run query N+1 times (1 warmup), show timing stats\n\
-             \\help                       - Show this help message\n\
-             \n\
-             SQL-style commands:\n\
-             set format = <value>;       - Change output format\n\
-             unset format;               - Reset format to default\n\
-             set completion = on/off;    - Enable/disable auto-completion\n\
-             Ctrl+Up/Down    - Cycle history\n\
-             Page Up/Down    - Scroll output pane\n\
-             Shift+Enter     - Insert newline without submitting",
-        );
     }
 
     // ── Query execution ──────────────────────────────────────────────────────
@@ -2058,8 +2173,9 @@ impl TuiApp {
         // ── Search line (bottom) ────────────────────────────────────────────
         let search_line = Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(hs.query().to_string(), Style::default().fg(Color::White)),
+            Span::styled(hs.query_before_cursor().to_string(), Style::default().fg(Color::White)),
             Span::styled("█", Style::default().fg(Color::Cyan)),
+            Span::styled(hs.query_after_cursor().to_string(), Style::default().fg(Color::White)),
         ]);
         f.render_widget(Paragraph::new(search_line), chunks[1]);
 
@@ -2216,40 +2332,50 @@ impl TuiApp {
         let cmd_style = Style::default().fg(Color::LightCyan);
 
         let keybinds: &[(&str, &str)] = &[
-            ("Ctrl+D",        "Exit"),
-            ("Ctrl+C",        "Cancel input / cancel running query"),
-            ("Ctrl+V",        "Open last result in csvlens viewer"),
-            ("Ctrl+E",        "Open current query in $EDITOR"),
-            ("Ctrl+R",        "Reverse history search"),
-            ("Ctrl+Space",    "Fuzzy schema search"),
-            ("Ctrl+Z",        "Undo last edit"),
-            ("Ctrl+Y",        "Redo"),
-            ("Tab",           "Open / navigate completion popup"),
-            ("Shift+Tab",     "Navigate completion popup backwards"),
-            ("Alt+F",         "Format SQL (uppercase keywords, 2-space indent)"),
-            ("Page Up/Down",  "Scroll output pane"),
-            ("Ctrl+Up/Down",  "Cycle through history"),
-            ("Escape",        "Close any open popup"),
+            ("Enter",            "Submit query (if complete) or insert newline"),
+            ("Shift/Alt+Enter",   "Always insert newline (even after `;`)"),
+            ("Ctrl+H",           "Show / hide this help"),
+            ("Ctrl+D",           "Exit"),
+            ("Ctrl+C",           "Cancel input / cancel running query"),
+            ("Ctrl+V",           "Open last result in csvlens viewer"),
+            ("Ctrl+E",           "Open current query in $EDITOR"),
+            ("Ctrl+R",           "Reverse history search"),
+            ("Ctrl+Space",       "Fuzzy schema search"),
+            ("Ctrl+Up/Down",     "Cycle through history (older / newer)"),
+            ("Ctrl+Z",           "Undo last edit"),
+            ("Ctrl+Y",           "Redo"),
+            ("Tab",              "Open / navigate completion popup"),
+            ("Shift+Tab",        "Navigate completion popup backwards"),
+            ("Alt+F",            "Format SQL (uppercase keywords, 2-space indent)"),
+            ("Page Up/Down",     "Scroll output pane"),
+            ("Mouse click",      "Move cursor to clicked position"),
+            ("Shift+Drag",       "Select text (most terminals)"),
+            ("Escape",           "Close any open popup"),
         ];
         let commands: &[(&str, &str)] = &[
-            ("/help",              "Show this help"),
-            ("/set k=v",          "Set a query parameter"),
-            ("/unset k",          "Remove a query parameter"),
-            ("/run <file>",       "Execute SQL from a file (Tab completes path)"),
-            ("/watch [N] <sql>",  "Re-run query every N seconds (default 5); Ctrl+C stops"),
-            ("/benchmark [N]",    "Run query N times (default 3) and report timings"),
-            ("/qh [limit] [min]", "Query history (default: last 100 in 60 min)"),
+            ("/exit",                 "Exit the REPL (also: /quit, exit, quit)"),
+            ("/run @<file>",          "Execute SQL queries from a file"),
+            ("/run <query>",          "Execute an inline SQL query"),
+            ("/benchmark [N] @<f>|<q>", "Benchmark N timed runs + 1 warmup"),
+            ("/watch [N] @<f>|<q>",   "Re-run every N secs; Ctrl+C stops"),
+            ("/qh [limit] [min]",     "Query history (default: 100 rows, 60 min)"),
+            ("/refresh",              "Refresh the schema completion cache"),
+            ("/view",                 "Open last result in csvlens viewer"),
+            ("set k=v;",             "Set a query parameter"),
+            ("unset k;",             "Remove a query parameter"),
         ];
 
-        // Determine column widths
+        // Determine column widths dynamically from content.
         let key_col = keybinds.iter().chain(commands.iter()).map(|(k, _)| k.len()).max().unwrap_or(14) + 2;
+        let max_desc = keybinds.iter().chain(commands.iter()).map(|(_, d)| d.len()).max().unwrap_or(30);
+        let sep_len = key_col + max_desc.max(28);
 
         let mut lines: Vec<Line> = Vec::new();
 
         // Section: keyboard shortcuts
         lines.push(Line::from(Span::styled("  Keyboard shortcuts", section_style)));
         lines.push(Line::from(Span::styled(
-            format!("  {}", "─".repeat(key_col + 30)),
+            format!("  {}", "─".repeat(sep_len)),
             sep_style,
         )));
         for (key, desc) in keybinds {
@@ -2265,9 +2391,9 @@ impl TuiApp {
         lines.push(Line::from(""));
 
         // Section: special commands
-        lines.push(Line::from(Span::styled("  Special commands", section_style)));
+        lines.push(Line::from(Span::styled("  Slash commands", section_style)));
         lines.push(Line::from(Span::styled(
-            format!("  {}", "─".repeat(key_col + 30)),
+            format!("  {}", "─".repeat(sep_len)),
             sep_style,
         )));
         for (cmd, desc) in commands {
@@ -2286,8 +2412,9 @@ impl TuiApp {
             Span::styled("Press Esc or q to close", sep_style),
         ]));
 
-        // Sizing: fixed inner content width + borders
-        let content_w = (key_col + 2 + 46) as u16 + 4; // key col + desc + padding + borders
+        // Sizing: compute popup width from actual content width.
+        let inner_w = 2 + sep_len; // "  " prefix + separator/item content
+        let content_w = inner_w as u16 + 2; // + 2 for left/right borders
         let content_h = lines.len() as u16 + 2;
 
         let popup_w = content_w.min(area.width.saturating_sub(6));
@@ -2362,7 +2489,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+Space fuzzy  Ctrl+E editor  Ctrl+V viewer  Ctrl+D exit  Ctrl+H help  Alt+F format  Tab complete ".to_string()
+            " Ctrl+H help  Ctrl+D exit  Ctrl+Space fuzzy  Ctrl+E editor  Ctrl+V viewer  Alt+F format  Tab complete ".to_string()
         };
 
         let total = area.width as usize;

@@ -7,6 +7,8 @@ pub const MAX_VISIBLE: usize = 16;
 pub struct HistorySearch {
     /// The characters the user has typed so far.
     query: String,
+    /// Byte offset of the insertion cursor within `query`.
+    cursor_pos: usize,
     /// Indices into `History::entries` of all matching entries, most-recent-first.
     all_matches: Vec<usize>,
     /// Which match is currently highlighted (index into `all_matches`, 0 = most recent).
@@ -23,6 +25,7 @@ impl HistorySearch {
     pub fn new(saved_content: String, entries: &[String]) -> Self {
         let mut s = Self {
             query: String::new(),
+            cursor_pos: 0,
             all_matches: Vec::new(),
             selected: 0,
             scroll_offset: 0,
@@ -34,6 +37,16 @@ impl HistorySearch {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// The part of the query before the cursor (for rendering).
+    pub fn query_before_cursor(&self) -> &str {
+        &self.query[..self.cursor_pos]
+    }
+
+    /// The part of the query at and after the cursor (for rendering).
+    pub fn query_after_cursor(&self) -> &str {
+        &self.query[self.cursor_pos..]
     }
 
     pub fn all_matches(&self) -> &[usize] {
@@ -93,13 +106,49 @@ impl HistorySearch {
     // ── Public mutation ──────────────────────────────────────────────────────
 
     pub fn push_char(&mut self, c: char, entries: &[String]) {
-        self.query.push(c);
+        self.query.insert(self.cursor_pos, c);
+        self.cursor_pos += c.len_utf8();
         self.recompute(entries);
     }
 
     pub fn pop_char(&mut self, entries: &[String]) {
-        self.query.pop();
+        if self.cursor_pos == 0 {
+            return;
+        }
+        // Find start of the character just before cursor_pos.
+        let new_pos = self.query[..self.cursor_pos]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.query.remove(new_pos);
+        self.cursor_pos = new_pos;
         self.recompute(entries);
+    }
+
+    /// Move the cursor one character to the left.
+    pub fn move_cursor_left(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+        self.cursor_pos = self.query[..self.cursor_pos]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+    }
+
+    /// Move the cursor one character to the right.
+    pub fn move_cursor_right(&mut self) {
+        if self.cursor_pos < self.query.len() {
+            let ch = self.query[self.cursor_pos..].chars().next().unwrap();
+            self.cursor_pos += ch.len_utf8();
+        }
+    }
+
+    /// Move the cursor to the start of the query (Ctrl+A).
+    pub fn cursor_to_start(&mut self) {
+        self.cursor_pos = 0;
     }
 
     /// Move selection to the next older match (Up arrow / Ctrl+R).
