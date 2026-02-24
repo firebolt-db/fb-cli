@@ -2313,6 +2313,7 @@ impl TuiApp {
         // Highlight style applied to the matching bracket.
         let paren_style = Style::default()
             .fg(Color::LightCyan)
+            .bg(Color::Indexed(234)) // same as current-line background
             .add_modifier(Modifier::BOLD);
 
         if spans.is_empty() && paren_match_byte.is_none() {
