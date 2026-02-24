@@ -38,7 +38,7 @@ fn test_basic_query() {
 #[test]
 fn test_set_format() {
     // First set format to TSV
-    let (success, stdout, _) = run_fb(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 42;"]);
+    let (success, stdout, _) = run_fb(&["--core", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 42;"]);
     assert!(success);
     assert_eq!(stdout, "?column?\nint\n42\n");
 }
@@ -78,7 +78,6 @@ fn test_params_escaping() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
         .args(&[
             "--core",
-            "--concise",
             "-f",
             "TabSeparatedWithNamesAndTypes",
             "-e",
@@ -195,7 +194,7 @@ fn test_command_parsing() {
 #[test]
 fn test_exiting() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes"])
+        .args(&["--core", "-f", "TabSeparatedWithNamesAndTypes"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -249,7 +248,7 @@ fn test_json_output_fully_parseable() {
 #[test]
 fn test_exit_code_on_connection_error() {
     // Test that exit code is non-zero when server is not available
-    let (success, _, stderr) = run_fb(&["--host", "localhost:59999", "--concise", "SELECT 1"]);
+    let (success, _, stderr) = run_fb(&["--host", "localhost:59999", "SELECT 1"]);
 
     assert!(!success, "Exit code should be non-zero when connection fails");
     assert!(
@@ -262,7 +261,7 @@ fn test_exit_code_on_connection_error() {
 #[test]
 fn test_exit_code_on_query_error() {
     // Test that exit code is non-zero when query returns an error (e.g., syntax error)
-    let (success, stdout, stderr) = run_fb(&["--core", "--concise", "SELEC INVALID SYNTAX"]);
+    let (success, stdout, stderr) = run_fb(&["--core", "SELEC INVALID SYNTAX"]);
 
     assert!(!success, "Exit code should be non-zero when query fails");
     // The server should return an error message in stdout or stderr
@@ -278,7 +277,7 @@ fn test_exit_code_on_query_error() {
 fn test_exit_code_on_query_error_interactive() {
     // Test that exit code is non-zero when any query fails in interactive mode
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&["--core", "--concise"])
+        .args(&["--core"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -403,13 +402,13 @@ fn test_server_format_psql() {
 
 #[test]
 fn test_exit_code_query_error_is_1() {
-    let (code, _, _) = run_fb_code(&["--core", "--concise", "SELEC INVALID SYNTAX"]);
+    let (code, _, _) = run_fb_code(&["--core", "SELEC INVALID SYNTAX"]);
     assert_eq!(code, 1, "bad SQL should exit with code 1, not {}", code);
 }
 
 #[test]
 fn test_exit_code_system_error_is_2() {
-    let (code, _, stderr) = run_fb_code(&["--host", "localhost:59999", "--concise", "SELECT 1"]);
+    let (code, _, stderr) = run_fb_code(&["--host", "localhost:59999", "SELECT 1"]);
     assert_eq!(code, 2, "connection error should exit with code 2, not {}; stderr: {}", code, stderr);
 }
 
@@ -419,7 +418,7 @@ fn test_exit_code_system_error_is_2() {
 fn test_exit_command() {
     // 'exit' should work the same as 'quit'
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes"])
+        .args(&["--core", "-f", "TabSeparatedWithNamesAndTypes"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -463,29 +462,11 @@ fn test_stats_on_stderr_not_stdout() {
     assert!(stdout.contains("Time:"), "client-side format: timing should be on stdout");
 }
 
-#[test]
-fn test_concise_suppresses_stats() {
-    // Client-side format (default): stats go to stdout (mirrors TUI behaviour)
-    let (success, stdout, _) = run_fb(&["--core", "SELECT 1"]);
-    assert!(success);
-    assert!(stdout.contains("Time:"), "client-side format: timing should be on stdout");
-
-    // Server-side format: no stats at all (clean output for scripting)
-    let (success, stdout, stderr) = run_fb(&["--core", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 1"]);
-    assert!(success);
-    assert!(!stdout.contains("Time:") && !stderr.contains("Time:"), "server-side format: no timing stats");
-
-    // With --concise: no stats anywhere
-    let (success, stdout, stderr) = run_fb(&["--core", "--concise", "SELECT 1"]);
-    assert!(success);
-    assert!(!stdout.contains("Time:") && !stderr.contains("Time:"), "--concise should suppress timing stats");
-}
-
 // ── Scripting output formats ─────────────────────────────────────────────────
 
 #[test]
 fn test_json_compact_output() {
-    let (success, stdout, _) = run_fb(&["--core", "--concise", "--format=JSON_Compact", "SELECT 1 AS n"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=JSON_Compact", "SELECT 1 AS n"]);
     assert!(success);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .expect("JSON_Compact output should be valid JSON");
@@ -495,7 +476,7 @@ fn test_json_compact_output() {
 
 #[test]
 fn test_tsv_output() {
-    let (success, stdout, _) = run_fb(&["--core", "--concise", "--format=TabSeparatedWithNamesAndTypes", "SELECT 42 AS answer"]);
+    let (success, stdout, _) = run_fb(&["--core", "--format=TabSeparatedWithNamesAndTypes", "SELECT 42 AS answer"]);
     assert!(success);
     assert!(stdout.contains("answer"), "TabSeparatedWithNamesAndTypes should include header");
     assert!(stdout.contains("42"));
@@ -506,7 +487,7 @@ fn test_tsv_output() {
 #[test]
 fn test_pipe_mode_multiple_queries_in_order() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes"])
+        .args(&["--core", "-f", "TabSeparatedWithNamesAndTypes"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -532,7 +513,7 @@ fn test_pipe_mode_multiple_queries_in_order() {
 fn test_pipe_mode_continues_after_error() {
     // A failed query in the middle should not abort subsequent queries
     let mut child = Command::new(env!("CARGO_BIN_EXE_fb"))
-        .args(&["--core", "--concise", "-f", "TabSeparatedWithNamesAndTypes"])
+        .args(&["--core", "-f", "TabSeparatedWithNamesAndTypes"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

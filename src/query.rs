@@ -197,7 +197,7 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
         buf.append(&mut context.args.extra);
         context.args.extra = normalize_extras(buf, false)?;
 
-        if !context.args.concise && key == "engine" && value == "system" {
+        if context.is_tui() && key == "engine" && value == "system" {
             out_err!(context, "\nTo query SYSTEM engine please run 'unset engine'\n");
         }
     }
@@ -340,8 +340,8 @@ fn emit_table_tui(
 }
 
 /// Extract a human-readable scan-statistics string from the FINISH_SUCCESSFULLY payload.
-fn compute_stats(concise: bool, statistics: &Option<serde_json::Value>) -> Option<String> {
-    if concise || statistics.is_none() {
+fn compute_stats(statistics: &Option<serde_json::Value>) -> Option<String> {
+    if statistics.is_none() {
         return None;
     }
     statistics.as_ref().and_then(|stats| {
@@ -411,19 +411,17 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
     let async_resp = request.send();
 
-    let finish_token = CancellationToken::new();
-    // Skip the spinner when running inside the TUI (it has its own progress indicator).
-    let maybe_spin = if context.is_tui() || context.args.no_spinner || context.args.concise {
-        None
-    } else {
-        let token_clone = finish_token.clone();
-        Some(task::spawn(async {
-            spin(token_clone).await;
-        }))
-    };
-
     // Build a cancel future: prefer the TUI's CancellationToken, fall back to SIGINT.
     let cancel = context.query_cancel.clone();
+
+    // Show spinner in non-interactive mode only for client-side formats.
+    let spin_token = CancellationToken::new();
+    let maybe_spin = if !context.is_tui() && context.args.should_render_table() {
+        let t = spin_token.clone();
+        Some(task::spawn(async move { spin(t).await; }))
+    } else {
+        None
+    };
 
     let mut error_kind: Option<ErrorKind> = None;
 
@@ -435,21 +433,10 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                 let _ = signal::ctrl_c().await;
             }
         } => {
-            finish_token.cancel();
-            if let Some(spin) = maybe_spin {
-                spin.await?;
-            }
-            if !context.args.concise {
-                out_err!(context, "^C");
-            }
             error_kind = Some(ErrorKind::SystemError);
         }
         response = async_resp => {
             let elapsed = start.elapsed();
-            finish_token.cancel();
-            if let Some(spin) = maybe_spin {
-                spin.await?;
-            }
 
             let mut maybe_request_id: Option<String> = None;
             match response {
@@ -646,7 +633,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             };
                             context.emit_parsed_result(&parsed_result);
                             context.last_result = Some(parsed_result);
-                            context.last_stats = compute_stats(context.args.concise, &statistics);
+                            context.last_stats = compute_stats(&statistics);
                         }
 
                     } else {
@@ -678,7 +665,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                             let table_output = render_table_plain(context, &parsed.columns, &parsed.rows, terminal_width, max_cell_length);
                                             out!(context, "{}", table_output);
                                         }
-                                        context.last_stats = compute_stats(context.args.concise, &parsed.statistics);
+                                        context.last_stats = compute_stats(&parsed.statistics);
                                     }
                                 }
                                 Err(e) => {
@@ -708,30 +695,33 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                 },
             };
 
-            if !context.args.concise {
-                let elapsed = format!("{:?}", elapsed / 100000 * 100000);
-                if context.args.should_render_table() && !context.is_tui() {
-                    // Client-side format in headless: emit to stdout so stats
-                    // follow the table (mirrors TUI output-pane behaviour).
-                    out!(context, "Time: {elapsed}");
-                    if let Some(stats) = &context.last_stats {
-                        out!(context, "{}", stats);
-                    }
-                    if let Some(request_id) = maybe_request_id {
-                        out!(context, "Request Id: {request_id}");
-                    }
-                    out!(context, "");
-                } else if context.is_tui() {
-                    // TUI with server-side format: send stats to output pane.
-                    out_err!(context, "Time: {elapsed}");
-                    if let Some(stats) = &context.last_stats {
-                        out_err!(context, "{}", stats);
-                    }
-                    context.emit_newline();
+            let elapsed = format!("{:?}", elapsed / 100000 * 100000);
+            if context.args.should_render_table() && !context.is_tui() {
+                // Client-side format in headless: emit to stdout so stats
+                // follow the table (mirrors TUI output-pane behaviour).
+                out!(context, "Time: {elapsed}");
+                if let Some(stats) = &context.last_stats {
+                    out!(context, "{}", stats);
                 }
+                if let Some(request_id) = maybe_request_id {
+                    out!(context, "Request Id: {request_id}");
+                }
+                out!(context, "");
+            } else if context.is_tui() {
+                // TUI: send stats to output pane.
+                out_err!(context, "Time: {elapsed}");
+                if let Some(stats) = &context.last_stats {
+                    out_err!(context, "{}", stats);
+                }
+                context.emit_newline();
             }
         }
     };
+
+    spin_token.cancel();
+    if let Some(s) = maybe_spin {
+        let _ = s.await;
+    }
 
     if let Some(kind) = error_kind {
         Err(Box::new(QueryFailed(kind)))
@@ -780,8 +770,6 @@ mod tests {
         let mut args = get_args().unwrap();
         args.host = "localhost:8123".to_string();
         args.database = "test_db".to_string();
-        args.concise = true; // suppress output
-
         let mut context = Context::new(args);
         let query_text = "select 42".to_string();
 

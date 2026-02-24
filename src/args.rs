@@ -92,17 +92,9 @@ pub struct Args {
     #[serde(default)]
     pub verbose: bool,
 
-    #[options(no_short, help = "Suppress time statistics in output")]
-    #[serde(default)]
-    pub concise: bool,
-
     #[options(no_short, help = "Hide URLs that may contain PII in query parameters")]
     #[serde(default)]
     pub hide_pii: bool,
-
-    #[options(no_short, help = "Disable the spinner in CLI output")]
-    #[serde(default)]
-    pub no_spinner: bool,
 
     #[options(no_short, help = "Minimum characters per column before switching to vertical mode", default = "15")]
     #[serde(default = "default_min_col_width")]
@@ -259,7 +251,6 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
     }
 
     args.verbose = args.verbose || defaults.verbose;
-    args.concise = args.concise || defaults.concise;
     args.hide_pii = args.hide_pii || defaults.hide_pii;
 
     // Use defaults for numeric settings if not specified
