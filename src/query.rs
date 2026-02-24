@@ -532,8 +532,18 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             updated_url = true;
                         }
                     }
-                    if updated_url && context.args.verbose && !context.args.hide_pii {
-                        out_err!(context, "URL: {}", context.url);
+                    if updated_url {
+                        if context.args.verbose && !context.args.hide_pii {
+                            out_err!(context, "URL: {}", context.url);
+                        }
+                        // Propagate the new extras back to the TUI's own context
+                        // (the task runs on a clone; without this the transaction
+                        // badge and similar features would never see the changes).
+                        if let Some(tx) = &context.tui_output_tx {
+                            let _ = tx.send(crate::tui_msg::TuiMsg::ParamUpdate(
+                                context.args.extra.clone(),
+                            ));
+                        }
                     }
 
                     let status = resp.status();

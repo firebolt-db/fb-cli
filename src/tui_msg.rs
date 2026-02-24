@@ -10,6 +10,11 @@ pub enum TuiMsg {
     ParsedResult(crate::table_renderer::ParsedResult),
     /// Overwrite the running-pane hint line (e.g. benchmark run progress).
     RunHint(String),
+    /// Propagate server-driven parameter changes back to the TUI's own context.
+    /// Sent whenever `firebolt-update-parameters`, `firebolt-remove-parameters`,
+    /// or `firebolt-reset-session` response headers are received so that the
+    /// transaction badge (and future features) reflect the updated state.
+    ParamUpdate(Vec<String>),
 }
 
 /// A single rendered line made up of zero or more styled spans.

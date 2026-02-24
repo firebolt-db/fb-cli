@@ -671,6 +671,10 @@ impl TuiApp {
                     }
                     self.context.last_result = Some(result);
                 }
+                Ok(TuiMsg::ParamUpdate(extras)) => {
+                    self.context.args.extra = extras;
+                    self.context.update_url();
+                }
                 Ok(TuiMsg::StyledLines(lines)) => {
                     self.output.push_tui_lines(lines);
                 }
