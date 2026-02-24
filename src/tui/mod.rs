@@ -943,7 +943,7 @@ impl TuiApp {
                 self.history.add(cmd.to_string());
                 self.execute_queries(expanded, queries).await;
             } else {
-                self.output.push_line(format!("Error: could not parse expanded query for: {}", cmd));
+                self.output.push_line(format!("Error: could not parse query expanded from '{}': {}", cmd, expanded));
             }
             return;
         }
