@@ -88,6 +88,20 @@ fn sql_preview(sql: &str, max_lines: usize) -> String {
     }
 }
 
+/// Strip a single layer of matching outer single or double quotes from `s`.
+/// `"my file.sql"` → `my file.sql`; `'foo'` → `foo`; `bare` → `bare`.
+fn strip_outer_quotes(s: &str) -> &str {
+    if s.len() >= 2 {
+        let b = s.as_bytes();
+        if (b[0] == b'"' && b[b.len() - 1] == b'"')
+            || (b[0] == b'\'' && b[b.len() - 1] == b'\'')
+        {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
 /// Read the file at `path`, expanding a leading `~` to the home directory.
 /// Returns the file contents on success or a human-readable error string.
 fn read_file_content(path: &str) -> Result<String, String> {
@@ -197,25 +211,12 @@ fn complete_file_paths(partial: &str) -> Vec<crate::completion::CompletionItem> 
             continue;
         }
 
-        // Reconstruct the value to insert (keep the directory prefix typed so far)
-        let dir_prefix = if expanded.ends_with('/') || expanded.ends_with(std::path::MAIN_SEPARATOR) || dir == Path::new(".") && !partial.contains('/') {
-            if partial.ends_with('/') {
-                partial.to_string()
-            } else {
-                // No dir prefix typed
-                String::new()
-            }
-        } else {
-            // Preserve the directory part the user typed
-            let dir_str = path
-                .parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or("");
-            if dir_str.is_empty() {
-                String::new()
-            } else {
-                format!("{}/", dir_str)
-            }
+        // Reconstruct the value to insert (keep the directory prefix typed so far).
+        // Derive from `partial` (before `~`-expansion) so completions stay in the
+        // form the user typed (e.g. `~/` rather than `/home/user/`).
+        let dir_prefix: &str = match partial.rfind('/') {
+            Some(pos) => &partial[..=pos],
+            None => "",
         };
 
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -1018,10 +1019,35 @@ impl TuiApp {
 
                         if partial.starts_with('@') {
                             // File path completion after the '@' prefix.
-                            let file_partial = &partial[1..];
-                            let items = complete_file_paths(file_partial);
+                            // Support optional opening quote: @"path or @'path
+                            let file_partial = &partial[1..]; // everything after '@'
+                            let (quote, path_partial) =
+                                if file_partial.starts_with('"') {
+                                    (Some('"'), &file_partial[1..])
+                                } else if file_partial.starts_with('\'') {
+                                    (Some('\''), &file_partial[1..])
+                                } else {
+                                    (None, file_partial)
+                                };
+
+                            let mut items = complete_file_paths(path_partial);
+
+                            // Wrap completion values in the same quote the user opened with.
+                            // Files get a closing quote unless one already follows the cursor;
+                            // directories never get a closing quote (allow continued navigation).
+                            if let Some(q) = quote {
+                                let closing_exists = first_line[cursor_col..].starts_with(q);
+                                for item in &mut items {
+                                    if item.value.ends_with('/') || closing_exists {
+                                        item.value = format!("{}{}", q, item.value);
+                                    } else {
+                                        item.value = format!("{}{}{}", q, item.value, q);
+                                    }
+                                }
+                            }
+
                             if !items.is_empty() {
-                                let file_start_col = arg_col + 1;
+                                let file_start_col = arg_col + 1; // right after '@'
                                 let common_prefix_len = {
                                     let first = &items[0].value;
                                     items.iter().skip(1).fold(first.len(), |len, item| {
@@ -1321,6 +1347,7 @@ impl TuiApp {
             }
             self.history.add(cmd.to_string());
             if let Some(path) = arg.strip_prefix('@') {
+                let path = strip_outer_quotes(path);
                 match read_file_content(path) {
                     Ok(content) => match crate::query::try_split_queries(&content) {
                         Some(queries) if !queries.is_empty() => {
@@ -1348,6 +1375,7 @@ impl TuiApp {
             self.history.add(cmd.to_string());
             let (n_runs, query_text) = parse_benchmark_args(cmd);
             let resolved = if let Some(path) = query_text.strip_prefix('@') {
+                let path = strip_outer_quotes(path);
                 match read_file_content(path) {
                     Ok(c) => c.trim().to_string(),
                     Err(e) => { self.output.push_error(&e); return; }
@@ -1362,6 +1390,7 @@ impl TuiApp {
             self.history.add(cmd.to_string());
             let (interval_secs, query_text) = parse_watch_args(cmd);
             let resolved = if let Some(path) = query_text.strip_prefix('@') {
+                let path = strip_outer_quotes(path);
                 match read_file_content(path) {
                     Ok(c) => c.trim().to_string(),
                     Err(e) => { self.output.push_error(&e); return; }
@@ -2171,11 +2200,19 @@ impl TuiApp {
         .split(inner);
 
         // ── Search line (bottom) ────────────────────────────────────────────
+        // Render the cursor by highlighting the character *under* it (or a
+        // space when at end-of-input), matching the style of the main editor.
+        let after_raw = hs.query_after_cursor();
+        let (cursor_ch, tail): (String, &str) = if let Some(ch) = after_raw.chars().next() {
+            (ch.to_string(), &after_raw[ch.len_utf8()..])
+        } else {
+            (" ".to_string(), "")
+        };
         let search_line = Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled(hs.query_before_cursor().to_string(), Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::Cyan)),
-            Span::styled(hs.query_after_cursor().to_string(), Style::default().fg(Color::White)),
+            Span::styled(cursor_ch, Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Span::styled(tail.to_string(), Style::default().fg(Color::White)),
         ]);
         f.render_widget(Paragraph::new(search_line), chunks[1]);
 
@@ -2551,5 +2588,20 @@ mod tests {
         assert_eq!(format_with_commas(999), "999");
         assert_eq!(format_with_commas(1000), "1,000");
         assert_eq!(format_with_commas(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn test_strip_outer_quotes() {
+        assert_eq!(strip_outer_quotes("bare"), "bare");
+        assert_eq!(strip_outer_quotes("\"my file.sql\""), "my file.sql");
+        assert_eq!(strip_outer_quotes("'my file.sql'"), "my file.sql");
+        // Mismatched quotes → unchanged
+        assert_eq!(strip_outer_quotes("\"foo'"), "\"foo'");
+        // Single-char string → unchanged (too short to strip)
+        assert_eq!(strip_outer_quotes("\""), "\"");
+        // Empty string → unchanged
+        assert_eq!(strip_outer_quotes(""), "");
+        // Nested quotes: only outer layer stripped
+        assert_eq!(strip_outer_quotes("\"'inner'\""), "'inner'");
     }
 }
