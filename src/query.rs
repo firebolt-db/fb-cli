@@ -258,6 +258,41 @@ pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<Str
     Ok(body)
 }
 
+/// Send `SELECT 1;` with the current context URL to validate that all query
+/// parameters are accepted by the server.  Returns an error message on HTTP
+/// 4xx/5xx or connection failure.
+pub async fn validate_setting(context: &mut Context) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
+        .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
+        .http2_keep_alive_while_idle(false)
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let req = client
+        .post(context.url.clone())
+        .header("user-agent", USER_AGENT)
+        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
+        .header("Firebolt-Machine-Query", "true")
+        .body("SELECT 1;");
+
+    let req = if let Some(sa_token) = &context.sa_token {
+        req.header("authorization", format!("Bearer {}", sa_token.token))
+    } else if !context.args.jwt.is_empty() {
+        req.header("authorization", format!("Bearer {}", context.args.jwt))
+    } else {
+        req
+    };
+
+    let response = req.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(readable_error(&body));
+    }
+    Ok(())
+}
+
 /// Render a result table to a String using the display mode from context.
 fn render_table_output(
     context: &Context,

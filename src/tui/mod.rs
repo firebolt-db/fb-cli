@@ -39,7 +39,7 @@ use crate::completion::SqlCompleter;
 use crate::context::Context;
 use crate::highlight::SqlHighlighter;
 use crate::meta_commands::handle_meta_command;
-use crate::query::{query, set_args, try_split_queries, unset_args};
+use crate::query::{query, set_args, try_split_queries, unset_args, validate_setting};
 use crate::viewer::open_csvlens_viewer;
 use crate::CLI_VERSION;
 
@@ -1842,12 +1842,25 @@ impl TuiApp {
     }
 
     async fn execute_queries(&mut self, original_text: String, queries: Vec<String>) {
-        // Apply set/unset commands to self.context immediately so the changes
-        // persist across queries.  The spawned task will apply them again on its
-        // cloned context (harmless due to BTreeMap deduplication in normalize_extras).
+        // Apply set/unset commands to self.context immediately.  For set commands
+        // that change server-side parameters (i.e. modify args.extra), first validate
+        // them by sending SELECT 1 with the new settings; bail out on rejection.
         for q in &queries {
-            let _ = set_args(&mut self.context, q);
-            let _ = unset_args(&mut self.context, q);
+            let extra_before = self.context.args.extra.clone();
+            let mut test_ctx = self.context.clone();
+            if set_args(&mut test_ctx, q).unwrap_or(false) {
+                if test_ctx.args.extra != extra_before {
+                    // Server-side parameter: validate before applying
+                    if let Err(e) = validate_setting(&mut test_ctx).await {
+                        self.push_sql_echo(q.trim());
+                        self.output.push_error(&format!("Error: {e}"));
+                        return;
+                    }
+                }
+                let _ = set_args(&mut self.context, q);
+            } else {
+                let _ = unset_args(&mut self.context, q);
+            }
         }
 
         // Echo query to output pane with syntax highlighting
