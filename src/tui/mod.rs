@@ -158,6 +158,13 @@ pub struct TuiApp {
     /// `None` when the cursor is not inside a function call.
     signature_hint: Option<(String, Vec<String>)>,
 
+    /// Mirrors the scroll position that tui-textarea uses internally.
+    /// Kept in sync each render frame so `apply_textarea_highlights` can map
+    /// character columns to correct screen positions even when the textarea is
+    /// scrolled horizontally or vertically.
+    ta_row_top: u16,
+    ta_col_top: u16,
+
     // After leaving alt-screen for csvlens we need a full redraw
     needs_clear: bool,
     should_quit: bool,
@@ -215,6 +222,8 @@ impl TuiApp {
             help_visible: false,
             history_search: None,
             signature_hint: None,
+            ta_row_top: 0,
+            ta_col_top: 0,
             needs_clear: false,
             should_quit: false,
             has_error: false,
@@ -395,7 +404,7 @@ impl TuiApp {
         // ── Ctrl+H help overlay ──────────────────────────────────────────────
         // Handled before everything else so it works during queries too.
         if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.help_visible = true;
+            self.help_visible = !self.help_visible;
             return false;
         }
         // Escape or q closes the help overlay (and nothing else).
@@ -1357,8 +1366,8 @@ impl TuiApp {
 
         let layout = compute_layout(area, input_height);
 
-        // Clamp scroll so it stays in bounds
-        self.output.clamp_scroll(layout.output.height);
+        // Clamp scroll so it stays in bounds (width needed for wrapped-line count)
+        self.output.clamp_scroll(layout.output.height, layout.output.width);
 
         // Output pane
         self.output.render(layout.output, f.buffer_mut());
@@ -1383,6 +1392,17 @@ impl TuiApp {
             let prompt = Paragraph::new("❯").style(Style::default().fg(Color::Green));
             f.render_widget(prompt, chunks[0]);
             f.render_widget(&self.textarea, chunks[1]);
+
+            // Mirror tui-textarea's internal viewport update so that
+            // apply_textarea_highlights can map character positions to correct
+            // screen coordinates even when the content is scrolled.
+            let (cursor_row, cursor_col) = self.textarea.cursor();
+            self.ta_row_top = Self::next_scroll_top(
+                self.ta_row_top, cursor_row as u16, chunks[1].height,
+            );
+            self.ta_col_top = Self::next_scroll_top(
+                self.ta_col_top, cursor_col as u16, chunks[1].width,
+            );
 
             // Apply per-token syntax highlighting to the rendered textarea buffer
             let textarea_area = chunks[1];
@@ -1447,6 +1467,19 @@ impl TuiApp {
         self.render_status_bar(f, layout.status);
     }
 
+    /// Replicate tui-textarea's internal scroll-top calculation.
+    /// Given the previous top row/col and the current cursor position, returns
+    /// the new top row/col that keeps the cursor inside the visible area.
+    fn next_scroll_top(prev_top: u16, cursor: u16, len: u16) -> u16 {
+        if cursor < prev_top {
+            cursor
+        } else if len > 0 && prev_top + len <= cursor {
+            cursor + 1 - len
+        } else {
+            prev_top
+        }
+    }
+
     /// Apply syntax highlighting to the textarea by post-processing the ratatui buffer.
     ///
     /// After `tui-textarea` renders its content (cursor, selection, etc.) we walk
@@ -1466,10 +1499,19 @@ impl TuiApp {
         }
 
         let (cursor_row, cursor_col) = self.textarea.cursor();
+        let row_scroll = self.ta_row_top as usize;
+        let col_scroll = self.ta_col_top as usize;
 
         let mut byte_offset = 0usize;
         for (line_idx, line) in lines.iter().enumerate() {
-            let screen_y = area.y + line_idx as u16;
+            // Rows scrolled above the visible area are not rendered.
+            if line_idx < row_scroll {
+                byte_offset += line.len() + 1;
+                continue;
+            }
+
+            let visible_row = line_idx - row_scroll;
+            let screen_y = area.y + visible_row as u16;
             if screen_y >= area.y + area.height {
                 break;
             }
@@ -1477,7 +1519,15 @@ impl TuiApp {
             let mut char_col = 0usize;
             for (byte_in_line, _ch) in line.char_indices() {
                 let byte_pos = byte_offset + byte_in_line;
-                let screen_x = area.x + char_col as u16;
+
+                // Characters scrolled to the left of the visible area are not rendered.
+                if char_col < col_scroll {
+                    char_col += 1;
+                    continue;
+                }
+
+                let visible_col = char_col - col_scroll;
+                let screen_x = area.x + visible_col as u16;
                 if screen_x >= area.x + area.width {
                     break;
                 }

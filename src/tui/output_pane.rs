@@ -153,8 +153,12 @@ impl OutputPane {
     }
 
     /// Clamp scroll so we don't go past the end of content.
-    pub fn clamp_scroll(&mut self, visible_height: u16) {
-        let total = self.lines.len();
+    /// `visible_width` is used to compute the number of visual (wrapped) lines.
+    pub fn clamp_scroll(&mut self, visible_height: u16, visible_width: u16) {
+        let width = visible_width as usize;
+        let total: usize = self.lines.iter()
+            .map(|ol| visual_line_count(&ol.content, width))
+            .sum();
         let height = visible_height as usize;
         if total <= height {
             self.scroll = 0;
@@ -164,27 +168,94 @@ impl OutputPane {
         // else: user-scrolled position is still in range, leave it alone
     }
 
-    /// Render only the visible slice of lines — O(visible_height), not O(total).
+    /// Render only the visible slice of lines.
     /// Content is bottom-anchored: empty padding fills the top so output
     /// grows upward from the input area, like a normal terminal.
+    /// Long lines are wrapped at `area.width` characters.
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
-        let start = self.scroll;
-        let end = (start + area.height as usize).min(self.lines.len());
+        let width = area.width as usize;
         let height = area.height as usize;
 
-        let content: Vec<Line> = self.lines[start..end]
+        // Expand stored lines into visual (wrapped) lines.
+        let visual: Vec<Line<'static>> = self.lines
             .iter()
-            .map(|l| l.content.clone())
+            .flat_map(|ol| wrap_line(&ol.content, width))
             .collect();
 
+        let start = self.scroll;
+        let end = (start + height).min(visual.len());
+        let slice = &visual[start..end];
+
         // Pad with blank lines above so content sits at the bottom.
-        let padding = height.saturating_sub(content.len());
-        let visible: Vec<Line> = std::iter::repeat_n(Line::raw(""), padding)
-            .chain(content)
+        let padding = height.saturating_sub(slice.len());
+        let visible: Vec<Line<'static>> = std::iter::repeat_n(Line::raw(""), padding)
+            .chain(slice.iter().cloned())
             .collect();
 
         Widget::render(Paragraph::new(visible), area, buf);
     }
+}
+
+// ── Line wrapping helpers ─────────────────────────────────────────────────────
+
+/// Count how many visual lines a stored `Line` occupies when the terminal is
+/// `width` columns wide.  One empty line still counts as one visual line.
+fn visual_line_count(line: &Line<'static>, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if chars == 0 { 1 } else { chars.div_ceil(width) }
+}
+
+/// Expand a `Line<'static>` into one or more visual lines of at most `width`
+/// characters, splitting across span boundaries as needed.
+fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line.clone()];
+    }
+    let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= width {
+        return vec![line.clone()];
+    }
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_len: usize = 0;
+
+    for span in &line.spans {
+        let mut seg_start = 0usize; // byte offset into span.content for the current segment
+
+        for (byte_idx, _ch) in span.content.char_indices() {
+            if current_len == width {
+                // Flush: push the portion of this span accumulated so far.
+                if byte_idx > seg_start {
+                    current_spans.push(Span::styled(
+                        span.content[seg_start..byte_idx].to_string(),
+                        span.style,
+                    ));
+                }
+                result.push(Line::from(std::mem::take(&mut current_spans)));
+                current_len = 0;
+                seg_start = byte_idx;
+            }
+            current_len += 1;
+        }
+
+        // Flush the remainder of this span.
+        if seg_start < span.content.len() {
+            current_spans.push(Span::styled(
+                span.content[seg_start..].to_string(),
+                span.style,
+            ));
+        }
+    }
+
+    if !current_spans.is_empty() {
+        result.push(Line::from(current_spans));
+    }
+
+    result
 }
 
 // ── TuiSpan → ratatui Span conversion ────────────────────────────────────────
