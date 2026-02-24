@@ -252,6 +252,39 @@ pub fn unset_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn st
     Ok(false)
 }
 
+/// Apply a `Firebolt-Update-Parameters` header value.
+///
+/// The header carries a comma-separated list of `key=value` pairs, e.g.:
+///   `transaction_id=abc123,transaction_sequence_id=1`
+///
+/// Each pair is forwarded to `set_args` so it ends up in the URL.
+fn apply_update_parameters(context: &mut Context, header_value: &str) -> Result<(), Box<dyn std::error::Error>> {
+    for pair in header_value.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        set_args(context, &format!("set {}", pair))?;
+    }
+    Ok(())
+}
+
+/// Apply a `Firebolt-Remove-Parameters` or `Firebolt-Reset-Session` header.
+///
+/// `keys` is a comma-separated list of parameter names to remove from
+/// `context.args.extra`, e.g. `"transaction_id,transaction_sequence_id"`.
+fn remove_parameters(context: &mut Context, keys: &str) {
+    for key in keys.split(',') {
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let prefix = format!("{}=", key);
+        context.args.extra.retain(|e| !e.starts_with(&prefix));
+    }
+    context.update_url();
+}
+
 // Execute a query silently and return the response body (for internal use like schema queries)
 pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let request = reqwest::Client::builder()
@@ -463,15 +496,18 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                 Ok(mut resp) => {
                     let mut updated_url = false;
                     for (header, value) in resp.headers() {
-                        if header == "firebolt-remove-parameters" {
-                            unset_args(context, format!("unset {}", value.to_str()?).as_str())?;
+                        if header == "firebolt-update-parameters" {
+                            apply_update_parameters(context, value.to_str()?)?;
                             updated_url = true;
-                        } else if header == "firebolt-update-parameters" {
-                            set_args(context, format!("set {}", value.to_str()?).as_str())?;
+                        } else if header == "firebolt-remove-parameters" {
+                            remove_parameters(context, value.to_str()?);
+                            updated_url = true;
+                        } else if header == "firebolt-reset-session" {
+                            // End of transaction: clear transaction_id and transaction_sequence_id.
+                            remove_parameters(context, "transaction_id,transaction_sequence_id");
                             updated_url = true;
                         } else if header == "X-REQUEST-ID" {
                             maybe_request_id = value.to_str().map_or(None, |l| Some(String::from(l)));
-                            updated_url = true;
                         } else if header == "firebolt-update-endpoint" {
                             let header_str = value.to_str()?;
                             // Split the header at the '?' character

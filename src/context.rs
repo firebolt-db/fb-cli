@@ -135,6 +135,16 @@ impl Context {
         }
     }
 
+    /// Returns `true` when an explicit transaction is active on this session.
+    ///
+    /// Detected by the presence of a `transaction_id` URL parameter, which the
+    /// server injects via `Firebolt-Update-Parameters` after `BEGIN` and removes
+    /// via `Firebolt-Reset-Session` / `Firebolt-Remove-Parameters` after
+    /// `COMMIT` or `ROLLBACK`.
+    pub fn in_transaction(&self) -> bool {
+        self.args.extra.iter().any(|e| e.starts_with("transaction_id="))
+    }
+
     /// Returns `true` when running inside the TUI event loop.
     pub fn is_tui(&self) -> bool {
         self.tui_output_tx.is_some()

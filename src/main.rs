@@ -25,7 +25,7 @@ use tui::TuiApp;
 
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const USER_AGENT: &str = concat!("fdb-cli/", env!("CARGO_PKG_VERSION"));
-pub const FIREBOLT_PROTOCOL_VERSION: &str = "2.3";
+pub const FIREBOLT_PROTOCOL_VERSION: &str = "2.4";
 
 #[tokio::main]
 async fn main() {

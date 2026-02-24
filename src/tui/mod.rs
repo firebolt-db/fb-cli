@@ -21,7 +21,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Terminal,
@@ -2860,6 +2860,7 @@ impl TuiApp {
         };
 
         let total = area.width as usize;
+        let in_txn = self.context.in_transaction();
 
         let status = if let Some((msg, _)) = &self.flash_message {
             // Flash: error on the left in red, hint line on the right in normal style.
@@ -2869,6 +2870,21 @@ impl TuiApp {
             let spans: Vec<Span> = vec![
                 Span::styled(flash_left + &gap, Style::default().bg(Color::Red).fg(Color::White)),
                 Span::styled(right, Style::default().bg(Color::DarkGray).fg(Color::White)),
+            ];
+            Paragraph::new(Line::from(spans))
+        } else if in_txn {
+            // Transaction active: show a yellow "TXN" badge between conn info and hints.
+            let badge = " TXN ";
+            let pad = total.saturating_sub(conn_info.len() + badge.len() + right.len());
+            let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+            let txn_style = Style::default()
+                .bg(Color::Indexed(130)) // dark orange
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+            let spans: Vec<Span> = vec![
+                Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), base),
+                Span::styled(badge, txn_style),
+                Span::styled(right, base),
             ];
             Paragraph::new(Line::from(spans))
         } else {
