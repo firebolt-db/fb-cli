@@ -135,15 +135,17 @@ impl UsageTracker {
         let mut columns = Vec::new();
         let query_upper = query.to_uppercase();
 
-        // Pattern: SELECT columns FROM
+        // Pattern: SELECT columns (up to the next major clause or end of string)
+        // Works regardless of whether FROM appears before or after SELECT.
         if let Some(select_pos) = query_upper.find("SELECT") {
-            if let Some(from_pos) = query_upper.find("FROM") {
-                // Only extract if FROM comes after SELECT
-                if from_pos > select_pos + 6 {
-                    let between = &query[select_pos + 6..from_pos];
-                    columns.extend(Self::extract_column_list(between));
-                }
-            }
+            let rest_upper = &query_upper[select_pos + 6..];
+            let end = ["FROM", "WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "UNION"]
+                .iter()
+                .filter_map(|kw| rest_upper.find(kw))
+                .min()
+                .unwrap_or(rest_upper.len());
+            let between = &query[select_pos + 6..select_pos + 6 + end];
+            columns.extend(Self::extract_column_list(between));
         }
 
         // Pattern: WHERE column = value
@@ -295,19 +297,20 @@ mod tests {
 
     #[test]
     fn test_extract_column_names_with_keywords_out_of_order() {
-        // Regression test for panic when FROM appears before SELECT
+        // FROM before SELECT — should still extract columns after SELECT
         let columns = UsageTracker::extract_column_names("from test select val");
-        // Should not panic, and should not extract columns since FROM comes before SELECT
-        assert_eq!(columns.len(), 0);
+        assert!(columns.contains(&"val".to_string()));
     }
 
     #[test]
     fn test_extract_column_names_edge_cases() {
-        // Test with only SELECT, no FROM
+        // SELECT with no following clause — column should still be extracted
         let columns = UsageTracker::extract_column_names("SELECT user_id");
-        assert_eq!(columns.len(), 0); // No FROM, so no columns extracted
+        assert!(columns.contains(&"user_id".to_string()));
 
-        // Test with FROM immediately after SELECT (no space for columns)
+        // "SELECTFROM" is not a valid SELECT keyword (no space), so find("SELECT")
+        // still matches at position 0; rest = "FROM users", end = 0 (FROM at pos 0),
+        // between = "" → no columns extracted.
         let columns = UsageTracker::extract_column_names("SELECTFROM users");
         assert_eq!(columns.len(), 0);
     }

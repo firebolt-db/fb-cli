@@ -59,8 +59,13 @@ impl PriorityScorer {
         tables_in_statement: &[String],
         column_table: Option<&str>,
     ) -> u32 {
-        // Get usage count
-        let usage_count = self.usage_tracker.get_count(item_type, name);
+        // For columns the tracker stores bare names; strip any "table." prefix.
+        let lookup_name: &str = if matches!(item_type, ItemType::Column) {
+            name.rsplit('.').next().unwrap_or(name)
+        } else {
+            name
+        };
+        let usage_count = self.usage_tracker.get_count(item_type, lookup_name);
 
         // Calculate base score from priority class
         let base_score = self.calculate_priority_class(
