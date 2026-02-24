@@ -2093,18 +2093,39 @@ impl TuiApp {
     // ── Textarea helpers ─────────────────────────────────────────────────────
 
     /// Format the current textarea content as SQL (Alt+F).
+    ///
+    /// For slash commands with a SQL argument (`/benchmark`, `/watch`), only
+    /// the SQL part after the command prefix is formatted.  `/run` takes a
+    /// file path, not SQL, so nothing is formatted in that case.
     fn format_sql(&mut self) {
-        let sql = self.textarea.lines().join("\n");
-        if sql.trim().is_empty() {
+        let full = self.textarea.lines().join("\n");
+        if full.trim().is_empty() {
             return;
         }
+
+        let first_line = self.textarea.lines().first().map(|s| s.as_str()).unwrap_or("");
+
+        // /run takes a file path — nothing to format.
+        if first_line.starts_with("/run ") {
+            return;
+        }
+
+        // For /benchmark and /watch, preserve the command prefix (including
+        // any optional numeric argument) and format only the SQL portion.
+        let (prefix, sql) = if let Some(arg_byte) = find_slash_arg_col(first_line) {
+            (&full[..arg_byte], &full[arg_byte..])
+        } else {
+            ("", full.as_str())
+        };
+
         let options = sqlformat::FormatOptions {
             indent: sqlformat::Indent::Spaces(2),
             uppercase: Some(true),
             ..sqlformat::FormatOptions::default()
         };
-        let formatted = sqlformat::format(&sql, &sqlformat::QueryParams::None, &options);
-        if formatted != sql {
+        let formatted_sql = sqlformat::format(sql, &sqlformat::QueryParams::None, &options);
+        let formatted = format!("{}{}", prefix, formatted_sql);
+        if formatted != full {
             self.set_textarea_content(&formatted);
         }
     }
