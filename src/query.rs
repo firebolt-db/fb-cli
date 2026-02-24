@@ -369,18 +369,10 @@ fn compute_stats(concise: bool, statistics: &Option<serde_json::Value>) -> Optio
 pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<dyn std::error::Error>> {
     // Handle set/unset commands
     if set_args(context, &query_text)? {
-        if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
-            out_err!(context, "URL: {}", context.url);
-        }
-
         return Ok(());
     }
 
     if unset_args(context, &query_text)? {
-        if !context.args.concise && !context.args.hide_pii && !context.is_tui() {
-            out_err!(context, "URL: {}", context.url);
-        }
-
         return Ok(());
     }
 
@@ -497,7 +489,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                             updated_url = true;
                         }
                     }
-                    if updated_url && !context.args.concise && !context.args.hide_pii && !context.is_tui() {
+                    if updated_url && context.args.verbose && !context.args.hide_pii {
                         out_err!(context, "URL: {}", context.url);
                     }
 
@@ -718,16 +710,30 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
             if !context.args.concise {
                 let elapsed = format!("{:?}", elapsed / 100000 * 100000);
-                out_err!(context, "Time: {elapsed}");
-                if let Some(stats) = &context.last_stats {
-                    out_err!(context, "{}", stats);
-                }
-                if let Some(request_id) = maybe_request_id {
-                    if !context.is_tui() {
-                        out_err!(context, "Request Id: {request_id}");
+                if context.args.should_render_table() && !context.is_tui() {
+                    // Client-side format in headless: emit to stdout so stats
+                    // follow the table (mirrors TUI output-pane behaviour).
+                    out!(context, "Time: {elapsed}");
+                    if let Some(stats) = &context.last_stats {
+                        out!(context, "{}", stats);
                     }
+                    if let Some(request_id) = maybe_request_id {
+                        out!(context, "Request Id: {request_id}");
+                    }
+                    out!(context, "");
+                } else {
+                    // Server-side format or TUI: keep on stderr.
+                    out_err!(context, "Time: {elapsed}");
+                    if let Some(stats) = &context.last_stats {
+                        out_err!(context, "{}", stats);
+                    }
+                    if let Some(request_id) = maybe_request_id {
+                        if !context.is_tui() {
+                            out_err!(context, "Request Id: {request_id}");
+                        }
+                    }
+                    context.emit_newline();
                 }
-                context.emit_newline();
             }
         }
     };

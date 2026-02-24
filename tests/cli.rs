@@ -460,15 +460,21 @@ fn test_stats_on_stderr_not_stdout() {
 
 #[test]
 fn test_concise_suppresses_stats() {
-    // Without --concise: stats on stderr
-    let (success, _, stderr) = run_fb(&["--core", "SELECT 1"]);
+    // Client-side format (default): stats go to stdout (mirrors TUI behaviour)
+    let (success, stdout, _) = run_fb(&["--core", "SELECT 1"]);
     assert!(success);
-    assert!(stderr.contains("Time:"), "without --concise, stderr should contain timing");
+    assert!(stdout.contains("Time:"), "client-side format: timing should be on stdout");
 
-    // With --concise: no stats
-    let (success, _, stderr) = run_fb(&["--core", "--concise", "SELECT 1"]);
+    // Server-side format: stats go to stderr (scripting-friendly)
+    let (success, stdout, stderr) = run_fb(&["--core", "-f", "TabSeparatedWithNamesAndTypes", "SELECT 1"]);
     assert!(success);
-    assert!(!stderr.contains("Time:"), "--concise should suppress timing stats");
+    assert!(!stdout.contains("Time:"), "server-side format: timing should not be on stdout");
+    assert!(stderr.contains("Time:"), "server-side format: timing should be on stderr");
+
+    // With --concise: no stats anywhere
+    let (success, stdout, stderr) = run_fb(&["--core", "--concise", "SELECT 1"]);
+    assert!(success);
+    assert!(!stdout.contains("Time:") && !stderr.contains("Time:"), "--concise should suppress timing stats");
 }
 
 // ── Scripting output formats ─────────────────────────────────────────────────
