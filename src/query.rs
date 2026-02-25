@@ -486,6 +486,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                 let _ = signal::ctrl_c().await;
             }
         } => {
+            out_err!(context, "^C");
             error_kind = Some(ErrorKind::SystemError);
         }
         response = async_resp => {

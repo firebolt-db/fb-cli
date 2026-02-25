@@ -399,12 +399,14 @@ impl SchemaCache {
                         );
                     }
                 } else {
-                    eprintln!("Warning: Failed to parse tables from schema query");
-                    eprintln!("Output was: {}", &tables_output[..tables_output.len().min(500)]);
+                    context.emit_err(format!(
+                        "Warning: Failed to parse tables from schema query. Output: {}",
+                        &tables_output[..tables_output.len().min(200)]
+                    ));
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Tables query failed: {}", e);
+                context.emit_err(format!("Warning: Tables query failed: {}", e));
             }
         }
 
@@ -427,11 +429,11 @@ impl SchemaCache {
                         });
                     }
                 } else {
-                    eprintln!("Warning: Failed to parse columns from schema query");
+                    context.emit_err("Warning: Failed to parse columns from schema query".to_string());
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Columns query failed: {}", e);
+                context.emit_err(format!("Warning: Columns query failed: {}", e));
             }
         }
 
@@ -444,11 +446,11 @@ impl SchemaCache {
                 if let Some(function_list) = Self::parse_functions(&functions_output) {
                     *self.functions.write().unwrap() = function_list.into_iter().collect();
                 } else {
-                    eprintln!("Warning: Failed to parse functions from schema query");
+                    context.emit_err("Warning: Failed to parse functions from schema query".to_string());
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Functions query failed: {}", e);
+                context.emit_err(format!("Warning: Functions query failed: {}", e));
             }
         }
 

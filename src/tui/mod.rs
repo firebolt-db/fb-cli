@@ -254,10 +254,9 @@ fn complete_file_paths(partial: &str) -> Vec<crate::completion::CompletionItem> 
         (parent, fname)
     };
 
-    let read_dir = std::fs::read_dir(dir).unwrap_or_else(|_| {
-        // If dir doesn't exist yet, try "." so we still return something
-        std::fs::read_dir(".").unwrap()
-    });
+    let Ok(read_dir) = std::fs::read_dir(dir).or_else(|_| std::fs::read_dir(".")) else {
+        return Vec::new();
+    };
 
     let mut dirs_list: Vec<CompletionItem> = Vec::new();
     let mut files_list: Vec<CompletionItem> = Vec::new();
@@ -1587,6 +1586,8 @@ impl TuiApp {
     // ── Slash commands ────────────────────────────────────────────────────────
 
     async fn handle_slash_command(&mut self, cmd: &str) {
+        self.history.reset_navigation();
+
         // /exit and /quit
         if cmd == "/exit" || cmd == "/quit" {
             self.should_quit = true;
@@ -2041,7 +2042,7 @@ impl TuiApp {
         self.output.push_line("Refreshing schema cache...");
         tokio::spawn(async move {
             if let Err(e) = cache.refresh(&mut ctx_clone).await {
-                eprintln!("Failed to refresh schema cache: {}", e);
+                ctx_clone.emit_err(format!("Schema refresh failed: {}", e));
             }
         });
     }
@@ -2104,8 +2105,8 @@ impl TuiApp {
         // that change server-side parameters (i.e. modify args.extra), first validate
         // them by sending SELECT 1 with the new settings; bail out on rejection.
         for q in &queries {
-            let extra_before = self.context.args.extra.clone();
             let mut test_ctx = self.context.without_transaction();
+            let extra_before = test_ctx.args.extra.clone();
             if set_args(&mut test_ctx, q).unwrap_or(false) {
                 if test_ctx.args.extra != extra_before {
                     // Server-side parameter: validate before applying

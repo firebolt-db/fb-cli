@@ -300,7 +300,7 @@ pub fn get_url(args: &Args) -> String {
     let output_format = if !args.format.is_empty() && !args.extra.iter().any(|e| e.starts_with("format=")) {
         if args.format.starts_with("client:") {
             // Client-side rendering: always use JSONLines_Compact
-            format!("&output_format=JSONLines_Compact")
+            "&output_format=JSONLines_Compact".to_string()
         } else {
             // Server-side rendering: use format as-is
             format!("&output_format={}", &args.format)

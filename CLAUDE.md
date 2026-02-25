@@ -49,7 +49,8 @@ cargo clippy
 
 ### Module Structure
 
-- **main.rs**: Entry point, handles REPL mode with rustyline for line editing and history
+- **main.rs**: Entry point; routes to headless (single query / pipe) or interactive TUI mode
+- **tui/mod.rs**: Interactive TUI built with ratatui + tui-textarea; event loop, key handling, slash commands, completion, history
 - **args.rs**: Command-line argument parsing with gumdrop, URL generation, and default config management
 - **context.rs**: Application state container holding Args and ServiceAccountToken
 - **query.rs**: HTTP query execution, set/unset parameter handling, and SQL query splitting using Pest parser
@@ -196,9 +197,9 @@ fb-cli uses a single `--format` option with a prefix notation to distinguish bet
 ## Important Behavioral Details
 
 - **URL encoding**: Parameters are encoded once during `normalize_extras(encode: true)`. Subsequent calls with `encode: false` prevent double-encoding.
-- **REPL multi-line**: Press Ctrl+O to insert newline. Queries must end with semicolon.
-- **Ctrl+C in REPL**: Cancels current input but doesn't exit
-- **Ctrl+D in REPL**: Exits (EOF)
-- **Ctrl+V in REPL**: Inserts `\view` command (press Enter to execute and open csvlens viewer for last result)
-- **Spinner**: Shown during query execution unless `--no-spinner` or `--concise`
+- **TUI multi-line**: Press Shift+Enter or Alt+Enter to insert a newline. Queries must end with semicolon.
+- **Ctrl+C in TUI**: Cancels an in-flight query; does not exit
+- **Ctrl+D in TUI**: Exits
+- **Ctrl+V in TUI**: Opens csvlens viewer for the last result directly
+- **Spinner**: Shown during query execution for client-side formats only
 - **History**: Saved to `~/.firebolt/fb_history` (max 10,000 entries), supports Ctrl+R search
