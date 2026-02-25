@@ -814,17 +814,20 @@ impl TuiApp {
                 }
                 is_first = false;
 
-                match cache.refresh(&mut ctx).await {
+                let cache_populated = match cache.refresh(&mut ctx).await {
                     Ok(()) => {
-                        let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
-                        return;
+                        !cache.get_all_functions().is_empty()
+                            || !cache.get_all_tables().is_empty()
                     }
-                    Err(_) => {
-                        if !sent_disconnected {
-                            let _ = bg_tx.send(TuiMsg::ConnectionStatus(false));
-                            sent_disconnected = true;
-                        }
-                    }
+                    Err(_) => false,
+                };
+                if cache_populated {
+                    let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
+                    return;
+                }
+                if !sent_disconnected {
+                    let _ = bg_tx.send(TuiMsg::ConnectionStatus(false));
+                    sent_disconnected = true;
                 }
             }
         });
