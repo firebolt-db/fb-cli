@@ -383,7 +383,8 @@ impl SchemaCache {
         // Parse and populate cache
         let mut new_tables = HashMap::new();
 
-        // Parse tables
+        // Parse tables — return Err on network/connection failure so the caller
+        // can distinguish "server unreachable" from other issues.
         match tables_result {
             Ok(tables_output) => {
                 if let Some(table_list) = Self::parse_tables(&tables_output) {
@@ -407,6 +408,7 @@ impl SchemaCache {
             }
             Err(e) => {
                 context.emit_err(format!("Warning: Tables query failed: {}", e));
+                return Err(e);
             }
         }
 

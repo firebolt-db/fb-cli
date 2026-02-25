@@ -15,6 +15,9 @@ pub enum TuiMsg {
     /// or `firebolt-reset-session` response headers are received so that the
     /// transaction badge (and future features) reflect the updated state.
     ParamUpdate(Vec<String>),
+    /// Report whether a schema-cache refresh (or ping) succeeded.
+    /// `true` = server reachable; `false` = connection failed.
+    ConnectionStatus(bool),
 }
 
 /// A single rendered line made up of zero or more styled spans.

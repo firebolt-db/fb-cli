@@ -474,6 +474,16 @@ pub struct TuiApp {
     should_quit: bool,
     pub has_error: bool,
 
+    /// Persistent background channel: schema refresh tasks and background workers
+    /// route their output here instead of to stderr.  Drained every event-loop tick.
+    bg_rx: mpsc::UnboundedReceiver<TuiMsg>,
+
+    /// Whether the server was successfully reached during the last schema refresh.
+    /// False until the first successful refresh; drives the red status-bar indicator.
+    connected: bool,
+    /// True while a reconnection-pinger task is running (prevents duplicate pingers).
+    ping_active: bool,
+
     /// Temporary message shown in the status bar, with the time it was set.
     flash_message: Option<(String, Instant)>,
 
@@ -486,7 +496,7 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new(context: Context, schema_cache: Arc<SchemaCache>) -> Self {
+    pub fn new(mut context: Context, schema_cache: Arc<SchemaCache>) -> Self {
         let usage_tracker = context
             .usage_tracker
             .clone()
@@ -506,6 +516,11 @@ impl TuiApp {
             SqlHighlighter::new(false).unwrap()
         });
         let fuzzy_completer = FuzzyCompleter::new(schema_cache.clone(), usage_tracker);
+
+        // Background channel: background tasks (schema refresh, etc.) send output
+        // here so it reaches the TUI output pane rather than going to stderr.
+        let (bg_tx, bg_rx) = mpsc::unbounded_channel::<TuiMsg>();
+        context.tui_output_tx = Some(bg_tx);
 
         Self {
             context,
@@ -539,6 +554,9 @@ impl TuiApp {
             flash_message: None,
             pending_viewer: false,
             pending_editor: false,
+            bg_rx,
+            connected: false,
+            ping_active: false,
         }
     }
 
@@ -571,8 +589,9 @@ impl TuiApp {
             let cache = self.schema_cache.clone();
             let mut ctx_clone = self.context.clone();
             tokio::spawn(async move {
-                if let Err(_e) = cache.refresh(&mut ctx_clone).await {
-                    // silently ignore – completion just won't work
+                let ok = cache.refresh(&mut ctx_clone).await.is_ok();
+                if let Some(tx) = &ctx_clone.tui_output_tx {
+                    let _ = tx.send(TuiMsg::ConnectionStatus(ok));
                 }
             });
         }
@@ -605,6 +624,7 @@ impl TuiApp {
             }
 
             self.drain_query_output();
+            self.drain_bg_output();
 
             if self.is_running {
                 self.spinner_tick += 1;
@@ -677,6 +697,10 @@ impl TuiApp {
                 Ok(TuiMsg::StyledLines(lines)) => {
                     self.output.push_tui_lines(lines);
                 }
+                Ok(TuiMsg::ConnectionStatus(_)) => {
+                    // ConnectionStatus is handled by drain_bg_output; shouldn't
+                    // arrive on the query channel, but ignore gracefully.
+                }
                 Ok(TuiMsg::Line(line)) => {
                     // Capture the "Showing first N rows..." hint for the running pane only.
                     if self.is_running && line.starts_with("Showing first ") {
@@ -708,7 +732,10 @@ impl TuiApp {
                         let cache = self.schema_cache.clone();
                         let mut ctx_clone = self.context.without_transaction();
                         tokio::spawn(async move {
-                            let _ = cache.refresh(&mut ctx_clone).await;
+                            let ok = cache.refresh(&mut ctx_clone).await.is_ok();
+                            if let Some(tx) = &ctx_clone.tui_output_tx {
+                                let _ = tx.send(TuiMsg::ConnectionStatus(ok));
+                            }
                         });
                     }
 
@@ -716,6 +743,80 @@ impl TuiApp {
                 }
             }
         }
+    }
+
+    // ── Background output draining ───────────────────────────────────────────
+
+    /// Drain the persistent background channel (schema refresh warnings, connection
+    /// status updates).  Called every event-loop tick regardless of query state.
+    fn drain_bg_output(&mut self) {
+        loop {
+            match self.bg_rx.try_recv() {
+                Ok(TuiMsg::ConnectionStatus(ok)) => {
+                    if ok {
+                        let was_disconnected = !self.connected;
+                        self.connected = true;
+                        self.ping_active = false;
+                        if was_disconnected && !self.context.args.no_completion {
+                            // Reconnected — trigger a schema refresh.
+                            // This refresh does NOT send ConnectionStatus so we
+                            // don't create a feedback loop.
+                            let cache = self.schema_cache.clone();
+                            let mut ctx = self.context.without_transaction();
+                            // Suppress output routing for the reconnect refresh
+                            // (errors are unlikely; if they happen the next DDL
+                            // will retry automatically).
+                            ctx.tui_output_tx = None;
+                            tokio::spawn(async move {
+                                let _ = cache.refresh(&mut ctx).await;
+                            });
+                        }
+                    } else {
+                        self.connected = false;
+                        if !self.ping_active {
+                            self.ping_active = true;
+                            self.spawn_pinger();
+                        }
+                    }
+                }
+                Ok(TuiMsg::Line(line)) => {
+                    if line.starts_with("Warning:") || line.starts_with("Error:") {
+                        self.output.push_error(&line);
+                    } else {
+                        self.output.push_ansi_text(&line);
+                    }
+                }
+                Ok(TuiMsg::StyledLines(lines)) => {
+                    self.output.push_tui_lines(lines);
+                }
+                Ok(_) => {} // other msg types not expected on bg channel
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    /// Spawn a background reconnection-pinger that sends `SELECT 1` once per
+    /// second until the server responds, then sends `ConnectionStatus(true)` and exits.
+    fn spawn_pinger(&self) {
+        // Capture the bg_tx so the pinger can signal back.
+        let bg_tx = match &self.context.tui_output_tx {
+            Some(tx) => tx.clone(),
+            None => return, // shouldn't happen, but be safe
+        };
+        let mut ctx = self.context.without_transaction();
+        // Suppress all query output from the pinger — connection-refused errors
+        // every second would be very noisy.
+        ctx.tui_output_tx = None;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if crate::query::query_silent(&mut ctx, "SELECT 1").await.is_ok() {
+                    let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
+                    return;
+                }
+            }
+        });
     }
 
     // ── Key handling ─────────────────────────────────────────────────────────
@@ -2041,8 +2142,9 @@ impl TuiApp {
         let mut ctx_clone = self.context.without_transaction();
         self.output.push_line("Refreshing schema cache...");
         tokio::spawn(async move {
-            if let Err(e) = cache.refresh(&mut ctx_clone).await {
-                ctx_clone.emit_err(format!("Schema refresh failed: {}", e));
+            let ok = cache.refresh(&mut ctx_clone).await.is_ok();
+            if let Some(tx) = &ctx_clone.tui_output_tx {
+                let _ = tx.send(TuiMsg::ConnectionStatus(ok));
             }
         });
     }
@@ -2880,25 +2982,37 @@ impl TuiApp {
                 Span::styled(right, Style::default().bg(Color::DarkGray).fg(Color::White)),
             ];
             Paragraph::new(Line::from(spans))
-        } else if in_txn {
-            // Transaction active: show a yellow "TXN" badge between conn info and hints.
-            let badge = " TXN ";
-            let pad = total.saturating_sub(conn_info.len() + badge.len() + right.len());
-            let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-            let txn_style = Style::default()
-                .bg(Color::Indexed(130)) // dark orange
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD);
-            let spans: Vec<Span> = vec![
-                Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), base),
-                Span::styled(badge, txn_style),
-                Span::styled(right, base),
-            ];
-            Paragraph::new(Line::from(spans))
         } else {
-            let pad = total.saturating_sub(conn_info.len() + right.len());
-            let text = format!("{}{}{}", conn_info, " ".repeat(pad), right);
-            Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White))
+            let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+            // Show connection info in red when the server is unreachable.
+            let conn_style = if !self.connected && !self.context.args.no_completion {
+                Style::default().bg(Color::Red).fg(Color::White)
+            } else {
+                base
+            };
+
+            if in_txn {
+                // Transaction active: show a yellow "TXN" badge between conn info and hints.
+                let badge = " TXN ";
+                let pad = total.saturating_sub(conn_info.len() + badge.len() + right.len());
+                let txn_style = Style::default()
+                    .bg(Color::Indexed(130)) // dark orange
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD);
+                let spans: Vec<Span> = vec![
+                    Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), conn_style),
+                    Span::styled(badge, txn_style),
+                    Span::styled(right, base),
+                ];
+                Paragraph::new(Line::from(spans))
+            } else {
+                let pad = total.saturating_sub(conn_info.len() + right.len());
+                let spans: Vec<Span> = vec![
+                    Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), conn_style),
+                    Span::styled(right, base),
+                ];
+                Paragraph::new(Line::from(spans))
+            }
         };
         f.render_widget(status, area);
     }
