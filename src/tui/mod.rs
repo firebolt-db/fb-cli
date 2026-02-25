@@ -584,14 +584,25 @@ impl TuiApp {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Kick off background schema cache refresh
+        // Kick off background schema cache refresh — but only after confirming
+        // the server can actually execute queries (ping_server checks for error
+        // responses, unlike a bare TCP connect or HTTP 200 with error JSON).
         if !self.context.args.no_completion {
             let cache = self.schema_cache.clone();
             let mut ctx_clone = self.context.clone();
             tokio::spawn(async move {
-                let ok = cache.refresh(&mut ctx_clone).await.is_ok();
-                if let Some(tx) = &ctx_clone.tui_output_tx {
-                    let _ = tx.send(TuiMsg::ConnectionStatus(ok));
+                match crate::query::ping_server(&mut ctx_clone).await {
+                    Ok(()) => {
+                        let _ = cache.refresh(&mut ctx_clone).await;
+                        if let Some(tx) = &ctx_clone.tui_output_tx {
+                            let _ = tx.send(TuiMsg::ConnectionStatus(true));
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(tx) = &ctx_clone.tui_output_tx {
+                            let _ = tx.send(TuiMsg::ConnectionStatus(false));
+                        }
+                    }
                 }
             });
         }
@@ -810,7 +821,10 @@ impl TuiApp {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                if crate::query::query_silent(&mut ctx, "SELECT 1").await.is_ok() {
+                // Use ping_server so we only consider the server "up" once it
+                // can actually execute a query — not merely accept a TCP connection
+                // or return HTTP 200 with an error body ("Cluster not yet healthy").
+                if crate::query::ping_server(&mut ctx).await.is_ok() {
                     let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
                     return;
                 }

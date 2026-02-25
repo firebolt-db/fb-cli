@@ -312,6 +312,22 @@ pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<Str
     Ok(body)
 }
 
+/// Check whether the server is ready to execute queries.
+/// Returns `Ok(())` only when `SELECT 42` completes successfully: the HTTP
+/// request must succeed AND the response body must contain no `"errors"` key
+/// (which Firebolt returns when the cluster is starting up or unhealthy).
+pub async fn ping_server(context: &mut Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let body = query_silent(context, "SELECT 42").await?;
+    for line in body.lines() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            if json.get("errors").is_some() {
+                return Err("Server not ready".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Send `SELECT 1;` with the current context URL to validate that all query
 /// parameters are accepted by the server.  Returns an error message on HTTP
 /// 4xx/5xx or connection failure.
