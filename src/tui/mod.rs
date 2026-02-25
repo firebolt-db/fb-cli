@@ -555,7 +555,7 @@ impl TuiApp {
             pending_viewer: false,
             pending_editor: false,
             bg_rx,
-            connected: false,
+            connected: true, // assume connected; turns red on first ConnectionStatus(false)
             ping_active: false,
         }
     }
@@ -758,10 +758,12 @@ impl TuiApp {
                         self.connected = true;
                         self.ping_active = false;
                         if was_disconnected && !self.context.args.no_completion {
-                            // Reconnected — trigger a schema refresh.
+                            // Reconnected — trigger a schema refresh so auto-completion
+                            // reflects the current database state.
                             // Keep tui_output_tx so any warnings appear in the output pane.
                             // Do NOT send ConnectionStatus from this refresh to avoid a
                             // feedback loop (server reachability is already confirmed by ping).
+                            self.output.push_line("Reconnected. Refreshing schema cache...");
                             let cache = self.schema_cache.clone();
                             let mut ctx = self.context.without_transaction();
                             tokio::spawn(async move {
@@ -2981,31 +2983,33 @@ impl TuiApp {
             Paragraph::new(Line::from(spans))
         } else {
             let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-            // Show connection info in red when the server is unreachable.
-            let conn_style = if !self.connected && !self.context.args.no_completion {
-                Style::default().bg(Color::Red).fg(Color::White)
+            let disconnected = !self.connected && !self.context.args.no_completion;
+            // When disconnected: show conn_info + "No server connection" badge in red.
+            let (left_text, conn_style) = if disconnected {
+                let disconnected_label = format!("{} \u{2717} No server connection ", conn_info);
+                (disconnected_label, Style::default().bg(Color::Red).fg(Color::White))
             } else {
-                base
+                (conn_info.clone(), base)
             };
 
             if in_txn {
                 // Transaction active: show a yellow "TXN" badge between conn info and hints.
                 let badge = " TXN ";
-                let pad = total.saturating_sub(conn_info.len() + badge.len() + right.len());
+                let pad = total.saturating_sub(left_text.len() + badge.len() + right.len());
                 let txn_style = Style::default()
                     .bg(Color::Indexed(130)) // dark orange
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD);
                 let spans: Vec<Span> = vec![
-                    Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), conn_style),
+                    Span::styled(format!("{}{}", left_text, " ".repeat(pad)), conn_style),
                     Span::styled(badge, txn_style),
                     Span::styled(right, base),
                 ];
                 Paragraph::new(Line::from(spans))
             } else {
-                let pad = total.saturating_sub(conn_info.len() + right.len());
+                let pad = total.saturating_sub(left_text.len() + right.len());
                 let spans: Vec<Span> = vec![
-                    Span::styled(format!("{}{}", conn_info, " ".repeat(pad)), conn_style),
+                    Span::styled(format!("{}{}", left_text, " ".repeat(pad)), conn_style),
                     Span::styled(right, base),
                 ];
                 Paragraph::new(Line::from(spans))
