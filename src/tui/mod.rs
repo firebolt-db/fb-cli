@@ -704,10 +704,6 @@ impl TuiApp {
                     // schema cache so new/dropped tables appear in completion.
                     // The flag is only set on success (ParsedResult is only
                     // emitted when the query completed without errors).
-                    // Skip the refresh when a transaction is open: BEGIN also
-                    // returns zero columns, and schema queries sent inside an
-                    // open transaction produce errors on some backends.  The
-                    // refresh will happen naturally after COMMIT/ROLLBACK.
                     if self.pending_schema_refresh && !self.context.args.no_completion {
                         self.pending_schema_refresh = false;
                         let cache = self.schema_cache.clone();
