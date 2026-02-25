@@ -589,6 +589,9 @@ impl TuiApp {
         // probe — it only succeeds once all schema queries execute without errors,
         // handling both network failures and "Cluster not yet healthy" responses.
         if !self.context.args.no_completion {
+            // Mark ping_active so drain_bg_output won't spawn a duplicate loop
+            // when ConnectionStatus(false) arrives from this same task.
+            self.ping_active = true;
             self.spawn_schema_retry_loop(true);
         }
 
