@@ -349,29 +349,48 @@ impl SchemaCache {
     }
 
     async fn do_refresh(&self, context: &mut Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Query tables (including system schemas - they'll be deprioritized by the scorer)
+        // ── Step 1: tables (health-check query) ─────────────────────────────
+        // Run this first and bail early on any failure so we don't waste time
+        // running the other three queries against an unavailable server.
         let tables_query = "SELECT table_schema, table_name \
                            FROM information_schema.tables \
                            ORDER BY table_schema, table_name";
 
-        let tables_result = query_silent(context, tables_query).await;
+        let tables_output = match query_silent(context, tables_query).await {
+            Err(e) => {
+                // Network/connection failure — report it.
+                context.emit_err(format!("Warning: Tables query failed: {}", e));
+                return Err(e);
+            }
+            Ok(body) => {
+                // The server might respond HTTP 200 but with an error body when the
+                // cluster is still starting up ("Cluster not yet healthy").  Treat
+                // that the same as a connection failure so the retry loop keeps waiting.
+                let is_error_body = body.lines().any(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .map(|j| j.get("errors").is_some())
+                        .unwrap_or(false)
+                });
+                if is_error_body {
+                    return Err("Server not ready".into());
+                }
+                body
+            }
+        };
 
-        // Query columns (including system schemas - they'll be deprioritized by the scorer)
+        // ── Step 2: remaining queries (only reached when server is healthy) ──
         let columns_query = "SELECT table_schema, table_name, column_name, data_type \
                             FROM information_schema.columns \
                             ORDER BY table_schema, table_name, ordinal_position";
-
         let columns_result = query_silent(context, columns_query).await;
 
-        // Query functions (including system functions, excluding operators)
         let functions_query = "SELECT routine_name \
                               FROM information_schema.routines \
                               WHERE routine_type != 'OPERATOR' \
                               ORDER BY routine_name";
-
         let functions_result = query_silent(context, functions_query).await;
 
-        // Query function signatures from information_schema.routines.
         // `routine_parameters` is an array column containing the parameter types
         // for each overload, e.g. `["text"]` or `["anyelement","anyelement"]`.
         let signatures_query = "SELECT routine_name, routine_parameters \
@@ -380,36 +399,26 @@ impl SchemaCache {
                                  ORDER BY routine_name";
         let signatures_result = query_silent(context, signatures_query).await;
 
-        // Parse and populate cache
+        // ── Step 3: parse and populate cache ────────────────────────────────
         let mut new_tables = HashMap::new();
 
-        // Parse tables — return Err on network/connection failure so the caller
-        // can distinguish "server unreachable" from other issues.
-        match tables_result {
-            Ok(tables_output) => {
-                if let Some(table_list) = Self::parse_tables(&tables_output) {
-                    for (schema, table) in table_list {
-                        let key = format!("{}.{}", schema, table);
-                        new_tables.insert(
-                            key,
-                            TableMetadata {
-                                schema_name: schema,
-                                table_name: table,
-                                columns: Vec::new(),
-                            },
-                        );
-                    }
-                } else {
-                    context.emit_err(format!(
-                        "Warning: Failed to parse tables from schema query. Output: {}",
-                        &tables_output[..tables_output.len().min(200)]
-                    ));
-                }
+        if let Some(table_list) = Self::parse_tables(&tables_output) {
+            for (schema, table) in table_list {
+                let key = format!("{}.{}", schema, table);
+                new_tables.insert(
+                    key,
+                    TableMetadata {
+                        schema_name: schema,
+                        table_name: table,
+                        columns: Vec::new(),
+                    },
+                );
             }
-            Err(e) => {
-                context.emit_err(format!("Warning: Tables query failed: {}", e));
-                return Err(e);
-            }
+        } else {
+            context.emit_err(format!(
+                "Warning: Failed to parse tables from schema query. Output: {}",
+                &tables_output[..tables_output.len().min(200)]
+            ));
         }
 
         // Parse columns and add to tables.

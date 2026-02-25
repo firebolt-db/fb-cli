@@ -584,27 +584,12 @@ impl TuiApp {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Kick off background schema cache refresh — but only after confirming
-        // the server can actually execute queries (ping_server checks for error
-        // responses, unlike a bare TCP connect or HTTP 200 with error JSON).
+        // Kick off background schema cache refresh.
+        // spawn_schema_retry_loop uses cache.refresh() directly as the readiness
+        // probe — it only succeeds once all schema queries execute without errors,
+        // handling both network failures and "Cluster not yet healthy" responses.
         if !self.context.args.no_completion {
-            let cache = self.schema_cache.clone();
-            let mut ctx_clone = self.context.clone();
-            tokio::spawn(async move {
-                match crate::query::ping_server(&mut ctx_clone).await {
-                    Ok(()) => {
-                        let _ = cache.refresh(&mut ctx_clone).await;
-                        if let Some(tx) = &ctx_clone.tui_output_tx {
-                            let _ = tx.send(TuiMsg::ConnectionStatus(true));
-                        }
-                    }
-                    Err(_) => {
-                        if let Some(tx) = &ctx_clone.tui_output_tx {
-                            let _ = tx.send(TuiMsg::ConnectionStatus(false));
-                        }
-                    }
-                }
-            });
+            self.spawn_schema_retry_loop(true);
         }
 
         let result = self.event_loop(&mut terminal).await;
@@ -768,24 +753,15 @@ impl TuiApp {
                         let was_disconnected = !self.connected;
                         self.connected = true;
                         self.ping_active = false;
-                        if was_disconnected && !self.context.args.no_completion {
-                            // Reconnected — trigger a schema refresh so auto-completion
-                            // reflects the current database state.
-                            // Keep tui_output_tx so any warnings appear in the output pane.
-                            // Do NOT send ConnectionStatus from this refresh to avoid a
-                            // feedback loop (server reachability is already confirmed by ping).
-                            self.output.push_line("Reconnected. Refreshing schema cache...");
-                            let cache = self.schema_cache.clone();
-                            let mut ctx = self.context.without_transaction();
-                            tokio::spawn(async move {
-                                let _ = cache.refresh(&mut ctx).await;
-                            });
+                        if was_disconnected {
+                            // Schema was already refreshed by spawn_schema_retry_loop.
+                            self.output.push_line("Reconnected.");
                         }
                     } else {
                         self.connected = false;
-                        if !self.ping_active {
+                        if !self.ping_active && !self.context.args.no_completion {
                             self.ping_active = true;
-                            self.spawn_pinger();
+                            self.spawn_schema_retry_loop(false);
                         }
                     }
                 }
@@ -806,27 +782,46 @@ impl TuiApp {
         }
     }
 
-    /// Spawn a background reconnection-pinger that sends `SELECT 1` once per
-    /// second until the server responds, then sends `ConnectionStatus(true)` and exits.
-    fn spawn_pinger(&self) {
-        // Capture the bg_tx so the pinger can signal back.
+    /// Spawn a background task that calls `cache.refresh()` until it succeeds,
+    /// then sends `ConnectionStatus(true)`.  Uses `cache.refresh()` directly as
+    /// the readiness probe — it returns `Err` for both network failures and
+    /// "Cluster not yet healthy" error responses, so we only signal success once
+    /// all schema queries have actually executed without errors.
+    ///
+    /// `first_attempt`: when `true` the first call is made immediately (no sleep);
+    /// when `false` (reconnect path) the first call is delayed by 1 s.
+    fn spawn_schema_retry_loop(&self, first_attempt: bool) {
         let bg_tx = match &self.context.tui_output_tx {
             Some(tx) => tx.clone(),
-            None => return, // shouldn't happen, but be safe
+            None => return,
         };
+        let cache = self.schema_cache.clone();
         let mut ctx = self.context.without_transaction();
-        // Suppress all query output from the pinger — connection-refused errors
-        // every second would be very noisy.
-        ctx.tui_output_tx = None;
+        // Use a /dev/null channel so repeated retry warnings (connection refused,
+        // not-yet-healthy, etc.) don't flood the output pane every second.
+        let (devnull_tx, _devnull_rx) = mpsc::unbounded_channel::<TuiMsg>();
+        ctx.tui_output_tx = Some(devnull_tx);
+
         tokio::spawn(async move {
+            let mut is_first = first_attempt;
+            let mut sent_disconnected = false;
             loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                // Use ping_server so we only consider the server "up" once it
-                // can actually execute a query — not merely accept a TCP connection
-                // or return HTTP 200 with an error body ("Cluster not yet healthy").
-                if crate::query::ping_server(&mut ctx).await.is_ok() {
-                    let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
-                    return;
+                if !is_first {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                is_first = false;
+
+                match cache.refresh(&mut ctx).await {
+                    Ok(()) => {
+                        let _ = bg_tx.send(TuiMsg::ConnectionStatus(true));
+                        return;
+                    }
+                    Err(_) => {
+                        if !sent_disconnected {
+                            let _ = bg_tx.send(TuiMsg::ConnectionStatus(false));
+                            sent_disconnected = true;
+                        }
+                    }
                 }
             }
         });
