@@ -759,14 +759,11 @@ impl TuiApp {
                         self.ping_active = false;
                         if was_disconnected && !self.context.args.no_completion {
                             // Reconnected — trigger a schema refresh.
-                            // This refresh does NOT send ConnectionStatus so we
-                            // don't create a feedback loop.
+                            // Keep tui_output_tx so any warnings appear in the output pane.
+                            // Do NOT send ConnectionStatus from this refresh to avoid a
+                            // feedback loop (server reachability is already confirmed by ping).
                             let cache = self.schema_cache.clone();
                             let mut ctx = self.context.without_transaction();
-                            // Suppress output routing for the reconnect refresh
-                            // (errors are unlikely; if they happen the next DDL
-                            // will retry automatically).
-                            ctx.tui_output_tx = None;
                             tokio::spawn(async move {
                                 let _ = cache.refresh(&mut ctx).await;
                             });
