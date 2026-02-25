@@ -2330,6 +2330,11 @@ impl TuiApp {
         // Move cursor to end of content
         self.textarea.move_cursor(CursorMove::Bottom);
         self.textarea.move_cursor(CursorMove::End);
+        // The new TextArea starts with viewport at (0,0). Reset our mirror so
+        // apply_textarea_highlights doesn't use stale offsets from before the
+        // content was replaced (stale col_top causes misaligned highlighting).
+        self.ta_row_top = 0;
+        self.ta_col_top = 0;
     }
 
     // ── Rendering ────────────────────────────────────────────────────────────
