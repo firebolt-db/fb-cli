@@ -1783,8 +1783,14 @@ impl TuiApp {
         }
 
         match cmd {
-            "/view" => self.open_viewer(),
-            "/refresh" | "/refresh_cache" => self.do_refresh(),
+            "/view" => {
+                self.history.add(cmd.to_string());
+                self.open_viewer();
+            }
+            "/refresh" | "/refresh_cache" => {
+                self.history.add(cmd.to_string());
+                self.do_refresh();
+            }
             _ => {
                 match handle_meta_command(&mut self.context, cmd) {
                     Ok(true) => {}
