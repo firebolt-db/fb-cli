@@ -149,6 +149,21 @@ impl Context {
     pub fn is_tui(&self) -> bool {
         self.tui_output_tx.is_some()
     }
+
+    /// Returns a clone with all server-managed transaction parameters removed.
+    ///
+    /// Use this when creating a context for internal queries (schema cache
+    /// refresh, setting validation) that must not run inside an open
+    /// transaction.
+    pub fn without_transaction(&self) -> Self {
+        let mut c = self.clone();
+        c.args.extra.retain(|e| {
+            !e.starts_with("transaction_id=")
+                && !e.starts_with("transaction_sequence_id=")
+        });
+        c.update_url();
+        c
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +182,38 @@ mod tests {
         assert!(context.url.contains("database=test_db"));
         assert!(context.sa_token.is_none());
         assert!(context.last_result.is_none());
+    }
+
+    #[test]
+    fn test_without_transaction_strips_txn_params() {
+        let mut args = crate::args::get_args().unwrap();
+        args.extra = vec![
+            "transaction_id=deadbeef".to_string(),
+            "transaction_sequence_id=3".to_string(),
+            "other_param=keep_me".to_string(),
+        ];
+        let ctx = Context::new(args);
+        assert!(ctx.in_transaction());
+
+        let clean = ctx.without_transaction();
+
+        assert!(!clean.in_transaction());
+        assert!(!clean.args.extra.iter().any(|e| e.starts_with("transaction_sequence_id=")));
+        assert!(clean.args.extra.iter().any(|e| e == "other_param=keep_me"),
+            "non-transaction extras must be preserved");
+        // URL must reflect the stripped state
+        assert!(!clean.url.contains("transaction_id"),
+            "URL must not contain transaction_id after without_transaction");
+    }
+
+    #[test]
+    fn test_without_transaction_noop_when_no_txn() {
+        let mut args = crate::args::get_args().unwrap();
+        args.extra = vec!["custom=value".to_string()];
+        let ctx = Context::new(args);
+        assert!(!ctx.in_transaction());
+
+        let clean = ctx.without_transaction();
+        assert_eq!(clean.args.extra, ctx.args.extra);
     }
 }

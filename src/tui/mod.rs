@@ -708,13 +708,10 @@ impl TuiApp {
                     // returns zero columns, and schema queries sent inside an
                     // open transaction produce errors on some backends.  The
                     // refresh will happen naturally after COMMIT/ROLLBACK.
-                    if self.pending_schema_refresh
-                        && !self.context.args.no_completion
-                        && !self.context.in_transaction()
-                    {
+                    if self.pending_schema_refresh && !self.context.args.no_completion {
                         self.pending_schema_refresh = false;
                         let cache = self.schema_cache.clone();
-                        let mut ctx_clone = self.context.clone();
+                        let mut ctx_clone = self.context.without_transaction();
                         tokio::spawn(async move {
                             let _ = cache.refresh(&mut ctx_clone).await;
                         });
@@ -2044,7 +2041,7 @@ impl TuiApp {
             return;
         }
         let cache = self.schema_cache.clone();
-        let mut ctx_clone = self.context.clone();
+        let mut ctx_clone = self.context.without_transaction();
         self.output.push_line("Refreshing schema cache...");
         tokio::spawn(async move {
             if let Err(e) = cache.refresh(&mut ctx_clone).await {
@@ -2112,7 +2109,7 @@ impl TuiApp {
         // them by sending SELECT 1 with the new settings; bail out on rejection.
         for q in &queries {
             let extra_before = self.context.args.extra.clone();
-            let mut test_ctx = self.context.clone();
+            let mut test_ctx = self.context.without_transaction();
             if set_args(&mut test_ctx, q).unwrap_or(false) {
                 if test_ctx.args.extra != extra_before {
                     // Server-side parameter: validate before applying
