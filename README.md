@@ -282,6 +282,40 @@ Saved defaults are stored in `~/.firebolt/fb_config` and merged with any flags y
 | `1` | One or more queries failed (bad SQL, permission denied, HTTP 400) |
 | `2` | System/infrastructure error (connection refused, auth failure, HTTP 4xx/5xx) |
 
+## Parameterized Queries
+
+Use `-p` / `--param` to pass positional parameters in non-interactive mode. The first `-p` value becomes `$1`, the second `$2`, and so on.
+
+```bash
+fb --core -p 42 -p 'Alice' \
+   "SELECT * FROM users WHERE id = \$1 AND name = \$2"
+```
+
+Parameters are automatically typed from the value:
+
+| Value passed | JSON sent | Example |
+|---|---|---|
+| Integer | number | `-p 42` → `42` |
+| Float | number | `-p 3.14` → `3.14` |
+| `true` / `false` | boolean | `-p true` → `true` |
+| `NULL` | null | `-p NULL` → `null` |
+| Anything else | string | `-p hello` → `"hello"` |
+
+Works in all non-interactive modes:
+
+```bash
+# Single-query
+fb --core -p 10 -p 20 "SELECT \$1 + \$2"
+
+# Pipe mode
+echo "SELECT \$1, \$2;" | fb --core -p hello -p world
+
+# With a file
+/run @query.sql   # in REPL (use set/unset for runtime params instead)
+```
+
+Firebolt validates and escapes parameter values server-side, so they are safe against SQL injection.
+
 ## Scripting
 
 ### stdout vs stderr
@@ -398,6 +432,8 @@ Optional arguments:
                                 client:horizontal, PSQL, JSON_Compact,
                                 JSONLines_Compact, TabSeparatedWithNamesAndTypes, ...)
   -e, --extra NAME=VALUE        Extra query parameters (repeatable)
+  -p, --params VALUE            Query parameter: first -p is $1, second is $2, ...
+                                Values auto-typed: int, float, bool, NULL, or string
   -l, --label LABEL             Query label for tracking
   -j, --jwt JWT                 JWT token for authentication
   --sa-id SA-ID                 Service Account ID
