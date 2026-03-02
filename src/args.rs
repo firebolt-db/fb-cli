@@ -133,6 +133,14 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub help: bool,
 
+    #[options(
+        short = "p",
+        help = "Query parameter value; positional: first -p is $1, second is $2, etc. \
+                Values are auto-typed: integers, floats, booleans, NULL, or strings."
+    )]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub params: Vec<String>,
+
     #[options(free, help = "Query command(s) to execute. If not specified, starts the REPL")]
     #[serde(skip_serializing, skip_deserializing)]
     pub query: Vec<String>,
@@ -292,6 +300,35 @@ pub fn get_args_from(raw: &[String]) -> Result<Args, Box<dyn std::error::Error>>
     Ok(args)
 }
 
+/// Infer the JSON type of a query parameter value.
+///
+/// Rules (tried in order):
+/// - `null` / `NULL`  → JSON null
+/// - `true` / `false` → JSON boolean
+/// - Parses as i64    → JSON integer
+/// - Parses as f64    → JSON float
+/// - Otherwise        → JSON string
+fn param_to_json_value(s: &str) -> serde_json::Value {
+    if s.eq_ignore_ascii_case("null") {
+        return serde_json::Value::Null;
+    }
+    if s.eq_ignore_ascii_case("true") {
+        return serde_json::Value::Bool(true);
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return serde_json::Value::Bool(false);
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return serde_json::Value::Number(i.into());
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return serde_json::Value::Number(n);
+        }
+    }
+    serde_json::Value::String(s.to_string())
+}
+
 // Create URL from Args
 pub fn get_url(args: &Args) -> String {
     let query_label = if !args.label.is_empty() && !args.extra.iter().any(|e| e.starts_with("query_label=")) {
@@ -327,8 +364,21 @@ pub fn get_url(args: &Args) -> String {
     };
     let advanced_mode = if is_localhost { "" } else { "&advanced_mode=1" };
 
+    let query_parameters = if args.params.is_empty() {
+        String::new()
+    } else {
+        let arr: Vec<serde_json::Value> = args.params.iter().enumerate()
+            .map(|(i, v)| serde_json::json!({
+                "name": format!("${}", i + 1),
+                "value": param_to_json_value(v),
+            }))
+            .collect();
+        let json = serde_json::to_string(&arr).unwrap_or_default();
+        format!("&query_parameters={}", urlencoding::encode(&json))
+    };
+
     format!(
-        "{protocol}://{host}/?{database}{query_label}{extra}{output_format}{advanced_mode}",
+        "{protocol}://{host}/?{database}{query_label}{extra}{output_format}{advanced_mode}{query_parameters}",
         host = args.host
     )
 }
@@ -494,6 +544,54 @@ mod tests {
         args.format = String::from("PSQL");
         assert!(!args.is_vertical_display());
         assert!(!args.is_horizontal_display());
+    }
+
+    #[test]
+    fn test_param_to_json_value() {
+        assert_eq!(param_to_json_value("null"), serde_json::Value::Null);
+        assert_eq!(param_to_json_value("NULL"), serde_json::Value::Null);
+        assert_eq!(param_to_json_value("true"), serde_json::Value::Bool(true));
+        assert_eq!(param_to_json_value("false"), serde_json::Value::Bool(false));
+        assert_eq!(param_to_json_value("42"), serde_json::json!(42i64));
+        assert_eq!(param_to_json_value("-7"), serde_json::json!(-7i64));
+        assert_eq!(param_to_json_value("3.14"), serde_json::json!(3.14f64));
+        assert_eq!(param_to_json_value("hello"), serde_json::json!("hello"));
+        assert_eq!(param_to_json_value("42abc"), serde_json::json!("42abc"));
+    }
+
+    #[test]
+    fn test_get_url_with_params() {
+        let mut args = Args::parse_args_default_or_exit();
+        args.host = "localhost:8123".to_string();
+        args.database = "test_db".to_string();
+        args.format = "PSQL".to_string();
+        args.params = vec!["42".to_string(), "alice".to_string(), "true".to_string()];
+
+        let url = get_url(&args);
+        // Should contain URL-encoded JSON array
+        assert!(url.contains("query_parameters="), "URL should contain query_parameters");
+        // Decode and verify content
+        let encoded = url.split("query_parameters=").nth(1).unwrap().split('&').next().unwrap();
+        let decoded = urlencoding::decode(encoded).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["name"], "$1");
+        assert_eq!(arr[0]["value"], 42i64);
+        assert_eq!(arr[1]["name"], "$2");
+        assert_eq!(arr[1]["value"], "alice");
+        assert_eq!(arr[2]["name"], "$3");
+        assert_eq!(arr[2]["value"], true);
+    }
+
+    #[test]
+    fn test_get_url_without_params() {
+        let mut args = Args::parse_args_default_or_exit();
+        args.host = "localhost:8123".to_string();
+        args.format = "PSQL".to_string();
+
+        let url = get_url(&args);
+        assert!(!url.contains("query_parameters="));
     }
 
     #[test]

@@ -89,11 +89,11 @@ fn test_params_escaping() {
         .unwrap();
 
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "SELECT param('$1');").unwrap();
+    writeln!(stdin, "SELECT param('$1') AS param;").unwrap();
     writeln!(stdin, "SET advanced_mode=true;").unwrap();
-    writeln!(stdin, "SELECT param('$1');").unwrap();
+    writeln!(stdin, "SELECT param('$1') AS param;").unwrap();
     writeln!(stdin, r#"SET query_parameters={{"name": "$1", "value": "b=}}&"}};"#).unwrap();
-    writeln!(stdin, "SELECT param('$1');").unwrap();
+    writeln!(stdin, "SELECT param('$1') AS param;").unwrap();
     drop(stdin); // Close stdin to end interactive mode
 
     let output = child.wait_with_output().unwrap();
@@ -113,6 +113,31 @@ fn test_params_escaping() {
     assert_eq!(lines.next().unwrap(), "param");
     assert_eq!(lines.next().unwrap(), "text");
     assert_eq!(lines.next().unwrap(), "b=}&");
+}
+
+#[test]
+fn test_param_flag() {
+    // Integer, string, boolean and NULL params; verify they substitute correctly.
+    let (success, stdout, _) = run_fb(&[
+        "--core",
+        "-f", "TabSeparatedWithNamesAndTypes",
+        "-p", "42",
+        "-p", "hello",
+        "-p", "true",
+        "-p", "NULL",
+        "SELECT param('$1') AS p1, param('$2') AS p2, param('$3') AS p3, param('$4') AS p4;",
+    ]);
+    assert!(success, "query with -p params should succeed");
+    let mut lines = stdout.lines();
+    assert_eq!(lines.next().unwrap(), "p1\tp2\tp3\tp4");
+    // TabSeparatedWithNamesAndTypes emits type names on the second line
+    let _types = lines.next().unwrap();
+    let values = lines.next().unwrap();
+    let cols: Vec<&str> = values.split('\t').collect();
+    assert_eq!(cols[0], "42");
+    assert_eq!(cols[1], "hello");
+    assert_eq!(cols[2], "true");
+    assert_eq!(cols[3], ""); // NULL in Firebolt TSV format is empty string
 }
 
 #[test]
