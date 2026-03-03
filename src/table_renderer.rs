@@ -189,24 +189,54 @@ pub fn write_result_as_csv<W: std::io::Write>(
 
 /// Wrap a string (by char boundaries) into lines of at most `width` chars each,
 /// padding every line to exactly `width` chars with spaces.
+///
+/// Embedded `\n` characters are treated as hard line breaks: the string is split
+/// on them first, then each segment is independently wrapped at `width` chars.
 fn wrap_cell(s: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
     }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.is_empty() {
-        return vec![" ".repeat(width)];
-    }
     let mut lines = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        let end = (start + width).min(chars.len());
-        let slice: String = chars[start..end].iter().collect();
-        let padded = format!("{:<width$}", slice, width = width);
-        lines.push(padded);
-        start = end;
+    for segment in s.split('\n') {
+        let chars: Vec<char> = segment.chars().collect();
+        if chars.is_empty() {
+            lines.push(" ".repeat(width));
+            continue;
+        }
+        let mut start = 0;
+        while start < chars.len() {
+            let end = (start + width).min(chars.len());
+            let slice: String = chars[start..end].iter().collect();
+            let padded = format!("{:<width$}", slice, width = width);
+            lines.push(padded);
+            start = end;
+        }
+    }
+    if lines.is_empty() {
+        lines.push(" ".repeat(width));
     }
     lines
+}
+
+/// The display width of a cell: maximum line width when split on `\n`.
+/// Used so multi-line cells don't inflate column-width estimates.
+fn cell_display_width(s: &str) -> usize {
+    s.split('\n').map(|l| l.chars().count()).max().unwrap_or(0)
+}
+
+/// How many terminal rows a cell needs at column width `w`, accounting for
+/// embedded newlines as hard breaks and then word-wrap within each segment.
+fn rows_needed_for_cell(s: &str, w: usize) -> usize {
+    if w == 0 {
+        return 1;
+    }
+    s.split('\n')
+        .map(|seg| {
+            let n = seg.chars().count();
+            if n == 0 { 1 } else { (n + w - 1) / w }
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 /// Build a TUI border line using box-drawing characters.
@@ -270,7 +300,9 @@ fn decide_col_widths(
     let natural_widths: Vec<usize> = (0..n)
         .map(|i| {
             let h = columns[i].name.chars().count();
-            let d = formatted.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+            // Use max line width (not total char count) so multi-line cells
+            // don't inflate the column width estimate.
+            let d = formatted.iter().map(|r| cell_display_width(&r[i])).max().unwrap_or(0);
             h.max(d).min(cap)
         })
         .collect();
@@ -294,7 +326,7 @@ fn decide_col_widths(
     let min_widths: Vec<usize> = (0..n)
         .map(|i| {
             let header_len = columns[i].name.chars().count();
-            let max_content = formatted.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+            let max_content = formatted.iter().map(|r| cell_display_width(&r[i])).max().unwrap_or(0);
             let min_from_header = (header_len + 1) / 2; // ceil(header_len / 2)
             let min_from_content = (max_content as f64).sqrt().ceil() as usize;
             10usize.max(min_from_header).max(min_from_content)
@@ -338,10 +370,8 @@ fn decide_col_widths(
     // A tall narrow cell is a sign that vertical layout will be much more readable.
     let any_cell_too_tall = formatted.iter().any(|row| {
         (0..n).any(|i| {
-            let len = row[i].chars().count();
             let w = col_widths[i].max(1);
-            let rows_needed = (len + w - 1) / w;
-            rows_needed > n
+            rows_needed_for_cell(&row[i], w) > n
         })
     });
     if any_cell_too_tall {
@@ -367,7 +397,13 @@ fn render_horizontal_tui(
     // Check if any cell (header or data) needs wrapping.
     let any_wrap = {
         let header_wraps = (0..n).any(|i| columns[i].name.chars().count() > col_widths[i]);
-        let data_wraps = formatted.iter().any(|row| (0..n).any(|i| row[i].chars().count() > col_widths[i]));
+        let data_wraps = formatted.iter().any(|row| {
+            (0..n).any(|i| {
+                // Wraps if the widest line exceeds the column, or if there are
+                // embedded newlines that force additional rows.
+                cell_display_width(&row[i]) > col_widths[i] || row[i].contains('\n')
+            })
+        });
         header_wraps || data_wraps
     };
 
@@ -452,12 +488,13 @@ fn truncate_to_chars(s: String, max_len: usize) -> String {
 }
 
 /// Format and truncate a cell value, using char-count for length measurement.
-/// Control characters (newlines, tabs, carriage returns) are replaced with spaces
-/// so that wrap_cell produces clean fixed-width chunks that ratatui renders correctly.
+///
+/// `\n` is preserved so `wrap_cell` can render it as an actual line break.
+/// Other control characters (tabs, carriage returns, etc.) are replaced with
+/// spaces to avoid corrupting ratatui's line rendering.
 fn fmt_cell(val: &Value, max_value_length: usize) -> String {
     let s = format_value(val);
-    // Replace control characters that would break ratatui's line rendering.
-    let s = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
+    let s = s.chars().map(|c| if c.is_control() && c != '\n' { ' ' } else { c }).collect::<String>();
     truncate_to_chars(s, max_value_length)
 }
 
@@ -523,7 +560,7 @@ pub fn render_vertical_table_to_tui_lines(
         let any_wrap_in_row = columns.iter().enumerate().any(|(col_idx, col)| {
             let name_wraps = col.name.chars().count() > name_col_w;
             let val = fmt_cell(row.get(col_idx).unwrap_or(&Value::Null), max_value_length);
-            let val_wraps = val.chars().count() > val_col_w;
+            let val_wraps = cell_display_width(&val) > val_col_w || val.contains('\n');
             name_wraps || val_wraps
         });
 
