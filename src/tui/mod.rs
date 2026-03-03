@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyboardEnhancementFlags,
-        KeyModifiers, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyboardEnhancementFlags, KeyModifiers, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -574,7 +575,7 @@ impl TuiApp {
     pub async fn run(mut self) -> Result<bool, Box<dyn std::error::Error>> {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
         // Enable Kitty keyboard protocol so Shift+Enter is distinguishable from Enter.
         // Silently ignore on terminals that don't support it.
         let _ = execute!(
@@ -599,7 +600,7 @@ impl TuiApp {
 
         disable_raw_mode()?;
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
 
         result
     }
@@ -636,26 +637,43 @@ impl TuiApp {
 
             terminal.draw(|f| self.render(f))?;
 
-            // Poll with a short timeout so the spinner animates even without input
+            // Poll with a short timeout so the spinner animates even without input.
+            // Drain ALL immediately-available events before the next render so that
+            // pasting N characters costs 1 render instead of N.
             if event::poll(Duration::from_millis(100))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        if self.handle_key(key).await {
-                            break;
+                let mut needs_hint_update = false;
+                loop {
+                    match event::read()? {
+                        Event::Key(key) => {
+                            if self.handle_key(key).await {
+                                self.should_quit = true;
+                            }
+                            needs_hint_update = true;
                         }
-                        self.update_signature_hint();
-                    }
-
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => self.output.scroll_up(8),
-                        MouseEventKind::ScrollDown => self.output.scroll_down(8),
-                        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                            self.handle_mouse_click(mouse.column, mouse.row);
+                        // Bracketed paste: the terminal bundles the entire pasted
+                        // string into one event — insert it all before re-rendering.
+                        Event::Paste(text) => {
+                            self.handle_paste(&text);
+                            needs_hint_update = true;
                         }
+                        Event::Mouse(mouse) => match mouse.kind {
+                            MouseEventKind::ScrollUp => self.output.scroll_up(8),
+                            MouseEventKind::ScrollDown => self.output.scroll_down(8),
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                self.handle_mouse_click(mouse.column, mouse.row);
+                            }
+                            _ => {}
+                        },
+                        Event::Resize(_, _) => {} // redraw on next tick
                         _ => {}
-                    },
-                    Event::Resize(_, _) => {} // redraw on next tick
-                    _ => {}
+                    }
+                    // Stop draining if we must quit or no more events are ready.
+                    if self.should_quit || !event::poll(Duration::from_millis(0))? {
+                        break;
+                    }
+                }
+                if needs_hint_update {
+                    self.update_signature_hint();
                 }
             }
 
@@ -1548,6 +1566,23 @@ impl TuiApp {
         }
     }
 
+    /// Insert a pasted string into the textarea at the current cursor position.
+    /// Called for `Event::Paste` (bracketed-paste) events.
+    /// `\r` is skipped; `\n` becomes a newline; all other chars are inserted normally.
+    fn handle_paste(&mut self, text: &str) {
+        if self.is_running {
+            return;
+        }
+        self.completion_state = None;
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.textarea.insert_newline();
+            } else if ch != '\r' {
+                self.textarea.insert_char(ch);
+            }
+        }
+    }
+
     /// Handle a left-mouse-button click at terminal position `(col, row)`.
     ///
     /// Priority:
@@ -2060,14 +2095,14 @@ impl TuiApp {
     fn suspend_tui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
         let _ = disable_raw_mode();
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
-        let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
         let _ = std::io::Write::flush(terminal.backend_mut());
     }
 
     /// Restore raw mode and alternate screen after an external program has
     /// finished.  Pairs with `suspend_tui`.
     fn resume_tui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) {
-        let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture);
+        let _ = execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste);
         let _ = execute!(
             terminal.backend_mut(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
