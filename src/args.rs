@@ -1,4 +1,4 @@
-use gumdrop::Options;
+use gumdrop::{Options, ParsingStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -193,6 +193,12 @@ pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>
 
 // Apply defaults and possibly update them.
 pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
+    let raw: Vec<String> = std::env::args().collect();
+    get_args_from(&raw)
+}
+
+/// Like `get_args()` but parses from an explicit argv slice (raw[0] is the program name).
+pub fn get_args_from(raw: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let config_path = config_path()?;
 
     let defaults: Args = if config_path.exists() {
@@ -201,7 +207,14 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         serde_yaml::from_str("")?
     };
 
-    let mut args = Args::parse_args_default_or_exit();
+    let skip = raw.len().min(1);
+    let mut args = match Args::parse_args(&raw[skip..], ParsingStyle::default()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        }
+    };
 
     args.extra = normalize_extras(args.extra, true)?;
 
