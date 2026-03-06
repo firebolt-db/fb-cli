@@ -2928,7 +2928,17 @@ impl TuiApp {
             .max()
             .unwrap_or(10);
         let popup_w = ((content_w + 4) as u16).min(total.width.saturating_sub(2));
-        let popup_h  = all_lines.len() as u16 + 2;
+
+        // Clamp height: the popup must fit between row 0 and input_area.y.
+        // `input_area.y` is the number of rows above the input pane, which is
+        // the maximum space available for a popup anchored above it.
+        let max_popup_h = input_area.y.min(total.height);
+        if max_popup_h < 3 { return; } // not enough room to show anything useful
+        let popup_h = (all_lines.len() as u16 + 2).min(max_popup_h);
+
+        // Truncate content lines to fit the clamped height (border takes 2 rows).
+        let max_content = popup_h.saturating_sub(2) as usize;
+        let all_lines: Vec<Line> = all_lines.into_iter().take(max_content).collect();
 
         // Position: just above the input area, right-aligned
         let y = input_area.y.saturating_sub(popup_h);
