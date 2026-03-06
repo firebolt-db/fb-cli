@@ -6,6 +6,10 @@ license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "fb"
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
 ratatui = "0.29"
 tui-textarea = "0.7"
@@ -27,7 +31,5 @@ pest = "2.7"
 pest_derive = "2.7"
 terminal_size = "0.3"
 csvlens = "0.14"
-devgen-tree-sitter-sql = "0.21.0"
-tree-sitter = "0.21.0"
 nucleo-matcher = "0.3.1"
 sqlformat = "0.5.0"
