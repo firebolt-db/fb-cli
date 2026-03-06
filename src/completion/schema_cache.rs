@@ -387,17 +387,38 @@ impl SchemaCache {
 
         let functions_query = "SELECT routine_name \
                               FROM information_schema.routines \
-                              WHERE routine_type != 'OPERATOR' \
+                              WHERE routine_type <> 'OPERATOR' \
                               ORDER BY routine_name";
         let functions_result = query_silent(context, functions_query).await;
 
-        // `routine_parameters` is an array column containing the parameter types
-        // for each overload, e.g. `["text"]` or `["anyelement","anyelement"]`.
-        let signatures_query = "SELECT routine_name, routine_parameters \
-                                 FROM information_schema.routines \
-                                 WHERE routine_type != 'OPERATOR' \
-                                 ORDER BY routine_name";
-        let signatures_result = query_silent(context, signatures_query).await;
+        // Try new format first: includes is_variadic; routine_parameters is array of structs.
+        // Falls back to old format (array of type strings) if new columns aren't available.
+        let new_sigs_query = "SELECT routine_name, routine_parameters, is_variadic \
+                              FROM information_schema.routines \
+                              WHERE routine_type <> 'OPERATOR' \
+                              ORDER BY routine_name";
+        let sigs_raw = query_silent(context, new_sigs_query).await;
+        let signatures_result: Option<String> = match sigs_raw {
+            Ok(body) => {
+                let has_error = body.lines().any(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .map(|j| j.get("errors").is_some())
+                        .unwrap_or(false)
+                });
+                if has_error {
+                    // Old server: no is_variadic column; fall back
+                    let old_sigs_query = "SELECT routine_name, routine_parameters \
+                                         FROM information_schema.routines \
+                                         WHERE routine_type <> 'OPERATOR' \
+                                         ORDER BY routine_name";
+                    query_silent(context, old_sigs_query).await.ok()
+                } else {
+                    Some(body)
+                }
+            }
+            Err(_) => None,
+        };
 
         // ── Step 3: parse and populate cache ────────────────────────────────
         let mut new_tables = HashMap::new();
@@ -466,13 +487,10 @@ impl SchemaCache {
         }
 
         // Parse function signatures (best-effort; silently ignored on failure)
-        match signatures_result {
-            Ok(sig_output) => {
-                if let Some(sig_map) = Self::parse_function_signatures(&sig_output) {
-                    *self.function_signatures.write().unwrap() = sig_map;
-                }
+        if let Some(sig_output) = signatures_result {
+            if let Some(sig_map) = Self::parse_function_signatures(&sig_output) {
+                *self.function_signatures.write().unwrap() = sig_map;
             }
-            Err(_) => { /* information_schema.parameters not available — that's fine */ }
         }
 
         Ok(())
@@ -630,11 +648,12 @@ impl SchemaCache {
         }
     }
 
-    /// Parse `(routine_name, routine_parameters)` rows from `information_schema.routines`
-    /// into a map of lowercase function name → list of signature strings.
+    /// Parse `(routine_name, routine_parameters[, is_variadic])` rows from
+    /// `information_schema.routines` into a map of lowercase function name → signature strings.
     ///
-    /// `routine_parameters` is a JSON array of parameter type strings per overload,
-    /// e.g. `["text"]` or `["anyelement", "anyelement"]`.
+    /// Supports two formats for `routine_parameters`:
+    /// - **New**: array of structs `[{type, name, default_value, comment}, ...]` (+ `is_variadic`)
+    /// - **Old**: array of type strings `["text", "integer", ...]`
     fn parse_function_signatures(output: &str) -> Option<HashMap<String, Vec<String>>> {
         let mut sig_map: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -652,21 +671,57 @@ impl SchemaCache {
                                     let rname = arr[0].as_str().unwrap_or("").trim().to_string();
                                     if rname.is_empty() { continue; }
 
-                                    // routine_parameters is a JSON array of type strings
-                                    let params: Vec<String> = arr[1]
-                                        .as_array()
-                                        .map(|a| {
-                                            a.iter()
-                                                .filter_map(|v| v.as_str())
-                                                .map(|s| s.to_string())
-                                                .collect()
-                                        })
-                                        .unwrap_or_default();
+                                    // arr[2] = is_variadic (new format only; absent in old)
+                                    let is_variadic = arr.get(2)
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+
+                                    let params: Vec<String> = if let Some(param_arr) = arr[1].as_array() {
+                                        if param_arr.is_empty() {
+                                            vec![]
+                                        } else if param_arr[0].is_object() {
+                                            // New format: [{type, name, default_value, comment}]
+                                            param_arr.iter().enumerate().map(|(i, p)| {
+                                                let typ = p.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                                                let name = p.get("name").and_then(|v| v.as_str());
+                                                let default = p.get("default_value").and_then(|v| v.as_str());
+                                                let is_last = i == param_arr.len() - 1;
+
+                                                let mut s = if let Some(n) = name {
+                                                    format!("{} {}", n, typ)
+                                                } else {
+                                                    typ.to_string()
+                                                };
+
+                                                if let Some(d) = default {
+                                                    if !d.is_empty() {
+                                                        s = format!("{} = {}", s, d);
+                                                    }
+                                                }
+
+                                                if is_variadic && is_last {
+                                                    s = format!("{}...", s);
+                                                }
+
+                                                s
+                                            }).collect()
+                                        } else {
+                                            // Old format: ["text", "integer", ...]
+                                            param_arr.iter().enumerate().map(|(i, v)| {
+                                                let typ = v.as_str().unwrap_or("?").to_string();
+                                                if is_variadic && i == param_arr.len() - 1 {
+                                                    format!("{}...", typ)
+                                                } else {
+                                                    typ
+                                                }
+                                            }).collect()
+                                        }
+                                    } else {
+                                        vec![]
+                                    };
 
                                     let sig = format!("{}({})", rname, params.join(", "));
-                                    let entry = sig_map
-                                        .entry(rname.to_lowercase())
-                                        .or_default();
+                                    let entry = sig_map.entry(rname.to_lowercase()).or_default();
                                     if !entry.contains(&sig) {
                                         entry.push(sig);
                                     }
@@ -721,6 +776,25 @@ mod tests {
                 "INTEGER".to_string()
             )
         );
+    }
+
+    #[test]
+    fn test_parse_function_signatures_new_format() {
+        // New format: routine_parameters is array of structs, with is_variadic
+        let output = r#"{"message_type":"DATA","data":[["date_add",[{"type":"text","name":"unit","default_value":null,"comment":""},{"type":"integer","name":"value","default_value":null,"comment":""},{"type":"timestamp","name":"date","default_value":null,"comment":""}],false],["coalesce",[{"type":"text","name":null,"default_value":null,"comment":""}],true],["upper",[{"type":"text","name":null,"default_value":null,"comment":""}],false]]}"#;
+        let sigs = SchemaCache::parse_function_signatures(output).unwrap();
+        assert_eq!(sigs["date_add"], vec!["date_add(unit text, value integer, date timestamp)"]);
+        assert_eq!(sigs["coalesce"], vec!["coalesce(text...)"]);
+        assert_eq!(sigs["upper"], vec!["upper(text)"]);
+    }
+
+    #[test]
+    fn test_parse_function_signatures_old_format() {
+        // Old format: routine_parameters is array of type strings, no is_variadic
+        let output = r#"{"message_type":"DATA","data":[["upper",["text"]],["date_add",["text","integer","timestamp"]]]}"#;
+        let sigs = SchemaCache::parse_function_signatures(output).unwrap();
+        assert_eq!(sigs["upper"], vec!["upper(text)"]);
+        assert_eq!(sigs["date_add"], vec!["date_add(text, integer, timestamp)"]);
     }
 
     #[test]
