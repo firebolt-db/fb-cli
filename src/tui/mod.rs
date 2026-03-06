@@ -1487,6 +1487,60 @@ impl TuiApp {
         let (word_start_byte_in_line, mut items) =
             self.completer.complete_at(line_to_cursor, cursor_col, &full_sql);
 
+        // ── Named-parameter completions ───────────────────────────────────────
+        // When the cursor is inside a function with known signatures, inject
+        // `param_name => ` suggestions right after any in-query column items.
+        {
+            use crate::completion::{CompletionItem, usage_tracker::ItemType};
+
+            if let Some((_, sigs)) = &self.signature_hint {
+                let partial = &line_to_cursor[word_start_byte_in_line..cursor_col];
+                let partial_lower = partial.to_lowercase();
+
+                // Collect unique param names across all overloads, in order.
+                // A token is a name (not a type) when its first char is lowercase
+                // (types are stored UPPERCASE in signature strings).
+                let mut seen = std::collections::HashSet::new();
+                let mut param_items: Vec<CompletionItem> = Vec::new();
+
+                for sig in sigs {
+                    let open = sig.find('(').unwrap_or(sig.len());
+                    let inner = sig[open + 1..].trim_end_matches(')');
+                    for param in inner.split(", ") {
+                        // Strip flow-wrap trailing comma and " => default"
+                        let main = param.trim().trim_end_matches(',');
+                        let main = main.split(" => ").next().unwrap_or(main);
+                        if main.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) {
+                            let name = main.split_whitespace().next().unwrap_or("");
+                            // Strip trailing "..." from variadic names like "val..."
+                            let name = name.trim_end_matches("...");
+                            if !name.is_empty()
+                                && seen.insert(name.to_owned())
+                                && name.starts_with(&partial_lower)
+                            {
+                                param_items.push(CompletionItem {
+                                    value: format!("{} => ", name),
+                                    description: "param".to_string(),
+                                    item_type: ItemType::Column,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if !param_items.is_empty() {
+                    // Insert after column items, before tables/functions.
+                    let col_end = items
+                        .iter()
+                        .position(|i| i.description != "column")
+                        .unwrap_or(items.len());
+                    let tail = items.split_off(col_end);
+                    items.extend(param_items);
+                    items.extend(tail);
+                }
+            }
+        }
+
         if items.is_empty() {
             return;
         }
