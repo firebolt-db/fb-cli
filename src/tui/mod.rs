@@ -2957,7 +2957,11 @@ impl TuiApp {
     }
 
     fn render_status_bar(&mut self, f: &mut ratatui::Frame, area: Rect) {
-        let host = &self.context.args.host;
+        let host = if !self.context.args.unix_socket.is_empty() {
+            &self.context.args.unix_socket
+        } else {
+            &self.context.args.host
+        };
         let db = &self.context.args.database;
 
         // Show cursor position (1-based) when the textarea is visible.
