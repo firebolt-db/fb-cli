@@ -1234,7 +1234,11 @@ impl TuiApp {
         match signature_hint::detect_function_at_cursor(&full_sql, byte_offset) {
             Some(func_name) => {
                 let sigs = self.schema_cache.get_signatures(&func_name);
-                self.signature_hint = Some((func_name, sigs));
+                if sigs.is_empty() {
+                    self.signature_hint = None;
+                } else {
+                    self.signature_hint = Some((func_name, sigs));
+                }
             }
             None => {
                 self.signature_hint = None;
