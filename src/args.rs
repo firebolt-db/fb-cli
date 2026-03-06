@@ -125,6 +125,10 @@ pub struct Args {
     #[serde(default)]
     pub version: bool,
 
+    #[options(no_short, help = "Connect to server via Unix domain socket at this path")]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub unix_socket: String,
+
     #[options(no_short, help = "Show help message and exit")]
     #[serde(skip_serializing, skip_deserializing)]
     pub help: bool,

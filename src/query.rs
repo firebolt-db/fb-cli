@@ -66,9 +66,8 @@ use crate::args::normalize_extras;
 use crate::auth::authenticate_service_account;
 use crate::context::Context;
 use crate::table_renderer;
+use crate::transport;
 use crate::utils::spin;
-use crate::FIREBOLT_PROTOCOL_VERSION;
-use crate::USER_AGENT;
 
 // ── Output helpers ────────────────────────────────────────────────────────────
 // These macros route output through the TUI channel when running in TUI mode,
@@ -287,59 +286,33 @@ fn remove_parameters(context: &mut Context, keys: &str) {
 
 // Execute a query silently and return the response body (for internal use like schema queries)
 pub async fn query_silent(context: &mut Context, query_text: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let request = reqwest::Client::builder()
-        .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
-        .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
-        .http2_keep_alive_while_idle(false)
-        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
-        .build()?
-        .post(context.url.clone())
-        .header("user-agent", USER_AGENT)
-        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
-        .header("Firebolt-Machine-Query", "true")
-        .body(query_text.to_string());
-
-    let request = if let Some(sa_token) = &context.sa_token {
-        request.header("authorization", format!("Bearer {}", sa_token.token))
+    let auth = if let Some(sa_token) = &context.sa_token {
+        Some(format!("Bearer {}", sa_token.token))
     } else if !context.args.jwt.is_empty() {
-        request.header("authorization", format!("Bearer {}", context.args.jwt))
+        Some(format!("Bearer {}", context.args.jwt))
     } else {
-        request
+        None
     };
-
-    let response = request.send().await?;
-    let body = response.text().await?;
-    Ok(body)
+    let unix_socket = (!context.args.unix_socket.is_empty()).then_some(context.args.unix_socket.as_str());
+    let response = transport::post(&context.url, unix_socket, query_text.to_string(), auth, true).await?;
+    Ok(response.text().await?)
 }
 
 /// Send `SELECT 1;` with the current context URL to validate that all query
 /// parameters are accepted by the server.  Returns an error message on HTTP
 /// 4xx/5xx or connection failure.
 pub async fn validate_setting(context: &mut Context) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
-        .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
-        .http2_keep_alive_while_idle(false)
-        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let req = client
-        .post(context.url.clone())
-        .header("user-agent", USER_AGENT)
-        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
-        .header("Firebolt-Machine-Query", "true")
-        .body("SELECT 1;");
-
-    let req = if let Some(sa_token) = &context.sa_token {
-        req.header("authorization", format!("Bearer {}", sa_token.token))
+    let auth = if let Some(sa_token) = &context.sa_token {
+        Some(format!("Bearer {}", sa_token.token))
     } else if !context.args.jwt.is_empty() {
-        req.header("authorization", format!("Bearer {}", context.args.jwt))
+        Some(format!("Bearer {}", context.args.jwt))
     } else {
-        req
+        None
     };
-
-    let response = req.send().await.map_err(|e| e.to_string())?;
+    let unix_socket = (!context.args.unix_socket.is_empty()).then_some(context.args.unix_socket.as_str());
+    let response = transport::post(&context.url, unix_socket, "SELECT 1;".to_string(), auth, true)
+        .await
+        .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(readable_error(&body));
@@ -443,26 +416,16 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
     // Clone query_text for tracking later
     let query_text_for_tracking = query_text.clone();
 
-    let mut request = reqwest::Client::builder()
-        .http2_keep_alive_timeout(std::time::Duration::from_secs(3600))
-        .http2_keep_alive_interval(Some(std::time::Duration::from_secs(60)))
-        .http2_keep_alive_while_idle(false)
-        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
-        .build()?
-        .post(context.url.clone())
-        .header("user-agent", USER_AGENT)
-        .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
-        .body(query_text);
-
-    if let Some(sa_token) = &context.sa_token {
-        request = request.header("authorization", format!("Bearer {}", sa_token.token));
-    }
-
-    if !context.args.jwt.is_empty() {
-        request = request.header("authorization", format!("Bearer {}", context.args.jwt));
-    }
-
-    let async_resp = request.send();
+    let auth = if let Some(sa_token) = &context.sa_token {
+        Some(format!("Bearer {}", sa_token.token))
+    } else if !context.args.jwt.is_empty() {
+        Some(format!("Bearer {}", context.args.jwt))
+    } else {
+        None
+    };
+    let unix_socket = (!context.args.unix_socket.is_empty()).then_some(context.args.unix_socket.as_str());
+    let url = context.url.clone();
+    let async_resp = transport::post(&url, unix_socket, query_text, auth, false);
 
     // Build a cancel future: prefer the TUI's CancellationToken, fall back to SIGINT.
     let cancel = context.query_cancel.clone();
@@ -705,7 +668,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
                     } else {
                         // ── Buffered path (non-interactive or server-rendered) ──
-                        let body = resp.text().await?;
+                        let body = resp.text().await.map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
                         if context.args.should_render_table() {
                             match table_renderer::parse_jsonlines_compact(&body) {
@@ -753,11 +716,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                     }
                 }
                 Err(error) => {
-                    if context.args.verbose {
-                        out_err!(context, "Failed to send the request: {:?}", error);
-                    } else {
-                        out_err!(context, "Failed to send the request: {}", error.to_string());
-                    }
+                    out_err!(context, "Failed to send the request: {}", error);
                     error_kind = Some(ErrorKind::SystemError);
                 },
             };
