@@ -2500,7 +2500,23 @@ impl TuiApp {
             let textarea_area = chunks[1];
             self.apply_textarea_highlights(f.buffer_mut(), textarea_area);
 
-            // Render completion popup if open (not during history search)
+            // Signature hint popup: rendered first (lower z-order) so the
+            // completion popup can paint on top of it.
+            let sig_hint_h = if self.history_search.is_none() && self.fuzzy_state.is_none() {
+                if let Some((func_name, sigs)) = &self.signature_hint {
+                    let func_name = func_name.clone();
+                    let sigs = sigs.clone();
+                    Self::render_signature_hint(f, layout.input, area, &func_name, &sigs)
+                        .map(|r| r.height)
+                        .unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            // Render completion popup above the signature hint (if both visible).
             self.last_popup_rect = None;
             if self.history_search.is_none() {
                 if let Some(cs) = &self.completion_state {
@@ -2510,6 +2526,7 @@ impl TuiApp {
                             layout.input,
                             chunks[1].x,
                             area,
+                            sig_hint_h,
                         );
                         completion_popup::render(cs, popup_rect, f);
                         // Record for mouse-click hit testing.
@@ -2533,15 +2550,6 @@ impl TuiApp {
                 let hs = self.history_search.as_ref().unwrap();
                 let entries: Vec<String> = self.history.entries().to_vec();
                 Self::render_history_search_popup(f, popup_rect, hs, &entries, &self.highlighter);
-            }
-        }
-
-        // Signature hint popup (above input, near where the function name starts)
-        if let Some((func_name, sigs)) = &self.signature_hint {
-            if self.history_search.is_none() && self.fuzzy_state.is_none() {
-                let func_name = func_name.clone();
-                let sigs = sigs.clone();
-                Self::render_signature_hint(f, layout.input, area, &func_name, &sigs);
             }
         }
 
@@ -2853,7 +2861,7 @@ impl TuiApp {
         total: Rect,
         func_name: &str,
         sigs: &[String],
-    ) {
+    ) -> Option<Rect> {
         use ratatui::{style::Modifier, widgets::{Clear, Paragraph}};
 
         // ── Colour palette ────────────────────────────────────────────────
@@ -3011,7 +3019,7 @@ impl TuiApp {
         // `input_area.y` is the number of rows above the input pane, which is
         // the maximum space available for a popup anchored above it.
         let max_popup_h = input_area.y.min(total.height);
-        if max_popup_h < 3 { return; } // not enough room to show anything useful
+        if max_popup_h < 3 { return None; } // not enough room to show anything useful
         let popup_h = (all_lines.len() as u16 + 2).min(max_popup_h);
 
         // Truncate content lines to fit the clamped height (border takes 2 rows).
@@ -3037,6 +3045,8 @@ impl TuiApp {
         f.render_widget(block, rect);
 
         f.render_widget(Paragraph::new(ratatui::text::Text::from(all_lines)), inner);
+
+        Some(rect)
     }
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {

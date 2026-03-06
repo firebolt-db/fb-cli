@@ -112,6 +112,7 @@ pub fn popup_area(
     input_area: Rect,
     textarea_x: u16,
     total: Rect,
+    bottom_offset: u16,
 ) -> Rect {
     let visible = (state.items.len() as u16).min(MAX_VISIBLE);
     let popup_h = visible + BORDER_OVERHEAD;
@@ -135,8 +136,10 @@ pub fn popup_area(
         preferred_x
     };
 
-    // Popup y: just above the input pane (in the output area)
-    let y = input_area.y.saturating_sub(popup_h);
+    // Popup y: just above the input pane (and above any bottom_offset, e.g.
+    // the signature hint popup that sits directly above the input pane).
+    let effective_bottom = input_area.y.saturating_sub(bottom_offset);
+    let y = effective_bottom.saturating_sub(popup_h);
 
     Rect::new(x, y.max(0), popup_w, popup_h)
 }
