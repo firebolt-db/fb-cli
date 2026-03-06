@@ -2796,26 +2796,141 @@ impl TuiApp {
         func_name: &str,
         sigs: &[String],
     ) {
-        use ratatui::{
-            style::Modifier,
-            widgets::{Clear, List, ListItem},
-        };
+        use ratatui::{style::Modifier, widgets::{Clear, Paragraph}};
 
-        // Build display lines
-        let lines: Vec<String> = if sigs.is_empty() {
-            vec![format!("{}(...)", func_name)]
+        // ── Colour palette ────────────────────────────────────────────────
+        let fname_style = Style::default().fg(Color::LightCyan);
+        let paren_style = Style::default().fg(Color::Indexed(250));
+        let name_style  = Style::default().fg(Color::White);
+        let type_style  = Style::default().fg(Color::Yellow);
+        let arrow_style = Style::default().fg(Color::Indexed(240));
+        let dflt_style  = Style::default().fg(Color::Indexed(248));
+
+        // Maximum inner width available for content (leave margins)
+        let max_w = total.width.saturating_sub(6).max(30) as usize;
+
+        // ── Helpers ───────────────────────────────────────────────────────
+
+        /// Split "func(p1, p2)" → ("func", ["p1", "p2"]).
+        /// Handles nested parens in type names (e.g. STRUCT(...)).
+        fn parse_sig(sig: &str) -> (&str, Vec<&str>) {
+            let Some(open) = sig.find('(') else { return (sig, vec![]) };
+            let fname = &sig[..open];
+            let inner = sig[open + 1..].trim_end_matches(')');
+            if inner.is_empty() { return (fname, vec![]); }
+            // Split at ", " respecting nested parens
+            let mut params = Vec::new();
+            let mut depth = 0usize;
+            let mut start = 0;
+            for (i, b) in inner.bytes().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => depth = depth.saturating_sub(1),
+                    b',' if depth == 0 => {
+                        params.push(inner[start..i].trim());
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            params.push(inner[start..].trim());
+            (fname, params)
+        }
+
+        /// Build styled spans for one param string.
+        /// Format: [name ]TYPE[...] [=> default]
+        /// A param has a name when its first character is lowercase.
+        fn style_param(
+            param: &str,
+            name_s: Style,
+            type_s: Style,
+            arrow_s: Style,
+            dflt_s: Style,
+        ) -> Vec<Span<'static>> {
+            let (main, default) = if let Some(idx) = param.find(" => ") {
+                (&param[..idx], Some(&param[idx + 4..]))
+            } else {
+                (param, None)
+            };
+
+            let has_name = main.chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+            let mut spans: Vec<Span<'static>> = Vec::new();
+
+            if has_name {
+                let sp = main.find(' ').unwrap_or(main.len());
+                spans.push(Span::styled(main[..sp].to_owned(), name_s));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(main[sp + 1..].to_owned(), type_s));
+            } else {
+                spans.push(Span::styled(main.to_owned(), type_s));
+            }
+
+            if let Some(d) = default {
+                spans.push(Span::styled(" => ".to_owned(), arrow_s));
+                spans.push(Span::styled(d.to_owned(), dflt_s));
+            }
+            spans
+        }
+
+        // ── Build display lines ───────────────────────────────────────────
+        let mut all_lines: Vec<Line> = Vec::new();
+
+        let fallback;
+        let sig_strs: &[String] = if sigs.is_empty() {
+            fallback = vec![format!("{}()", func_name)];
+            &fallback
         } else {
-            sigs.to_vec()
+            sigs
         };
 
-        let n = lines.len() as u16;
-        let popup_h = n + 2; // content rows + 2 borders
-        let popup_w = {
-            let max_w = lines.iter().map(|l| l.len()).max().unwrap_or(10) as u16 + 4;
-            max_w.min(total.width.saturating_sub(4))
-        };
+        for sig in sig_strs {
+            let (fname, params) = parse_sig(sig);
+            let fname_owned = fname.to_owned();
 
-        // Anchor: just above the input area, right-aligned within the terminal
+            if sig.len() <= max_w || params.len() <= 1 {
+                // ── Single line ───────────────────────────────────────────
+                let mut spans: Vec<Span> = vec![
+                    Span::styled(fname_owned, fname_style),
+                    Span::styled("(".to_owned(), paren_style),
+                ];
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 { spans.push(Span::styled(", ".to_owned(), paren_style)); }
+                    spans.extend(style_param(p, name_style, type_style, arrow_style, dflt_style));
+                }
+                spans.push(Span::styled(")".to_owned(), paren_style));
+                all_lines.push(Line::from(spans));
+            } else {
+                // ── Multi-line: one param per line, aligned after "(" ─────
+                let indent = " ".repeat(fname.len() + 1);
+                for (i, p) in params.iter().enumerate() {
+                    let is_first = i == 0;
+                    let is_last  = i == params.len() - 1;
+                    let suffix   = if is_last { ")" } else { "," };
+
+                    let mut spans: Vec<Span> = Vec::new();
+                    if is_first {
+                        spans.push(Span::styled(fname_owned.clone(), fname_style));
+                        spans.push(Span::styled("(".to_owned(), paren_style));
+                    } else {
+                        spans.push(Span::raw(indent.clone()));
+                    }
+                    spans.extend(style_param(p, name_style, type_style, arrow_style, dflt_style));
+                    spans.push(Span::styled(suffix.to_owned(), paren_style));
+                    all_lines.push(Line::from(spans));
+                }
+            }
+        }
+
+        // ── Compute popup dimensions ──────────────────────────────────────
+        let content_w = all_lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+            .max()
+            .unwrap_or(10);
+        let popup_w = ((content_w + 4) as u16).min(total.width.saturating_sub(2));
+        let popup_h  = all_lines.len() as u16 + 2;
+
+        // Position: just above the input area, right-aligned
         let y = input_area.y.saturating_sub(popup_h);
         let x = total.width.saturating_sub(popup_w + 1);
         let rect = Rect::new(x, y, popup_w, popup_h);
@@ -2824,32 +2939,16 @@ impl TuiApp {
 
         let title = Span::styled(
             format!(" {} ", func_name),
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
         );
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Indexed(67)));
-
         let inner = block.inner(rect);
         f.render_widget(block, rect);
 
-        let items: Vec<ListItem> = lines
-            .iter()
-            .map(|sig| {
-                // Colour: function name in cyan, parens+types in default
-                let paren = sig.find('(').unwrap_or(sig.len());
-                let (fname, rest) = sig.split_at(paren);
-                ListItem::new(Line::from(vec![
-                    Span::styled(fname.to_string(), Style::default().fg(Color::LightCyan)),
-                    Span::styled(rest.to_string(), Style::default().fg(Color::White)),
-                ]))
-            })
-            .collect();
-
-        f.render_widget(List::new(items), inner);
+        f.render_widget(Paragraph::new(ratatui::text::Text::from(all_lines)), inner);
     }
 
     fn render_help_popup(&self, f: &mut ratatui::Frame, area: Rect) {

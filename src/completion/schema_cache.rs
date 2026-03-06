@@ -682,25 +682,28 @@ impl SchemaCache {
                                         } else if param_arr[0].is_object() {
                                             // New format: [{type, name, default_value, comment}]
                                             param_arr.iter().enumerate().map(|(i, p)| {
-                                                let typ = p.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                                                let typ = p.get("type").and_then(|v| v.as_str()).unwrap_or("?").to_uppercase();
                                                 let name = p.get("name").and_then(|v| v.as_str());
                                                 let default = p.get("default_value").and_then(|v| v.as_str());
                                                 let is_last = i == param_arr.len() - 1;
 
+                                                // Build: [name ]TYPE[...] [=> default]
                                                 let mut s = if let Some(n) = name {
-                                                    format!("{} {}", n, typ)
+                                                    if is_variadic && is_last {
+                                                        format!("{} {}...", n, typ)
+                                                    } else {
+                                                        format!("{} {}", n, typ)
+                                                    }
+                                                } else if is_variadic && is_last {
+                                                    format!("{}...", typ)
                                                 } else {
-                                                    typ.to_string()
+                                                    typ
                                                 };
 
                                                 if let Some(d) = default {
                                                     if !d.is_empty() {
-                                                        s = format!("{} = {}", s, d);
+                                                        s = format!("{} => {}", s, d);
                                                     }
-                                                }
-
-                                                if is_variadic && is_last {
-                                                    s = format!("{}...", s);
                                                 }
 
                                                 s
@@ -708,7 +711,7 @@ impl SchemaCache {
                                         } else {
                                             // Old format: ["text", "integer", ...]
                                             param_arr.iter().enumerate().map(|(i, v)| {
-                                                let typ = v.as_str().unwrap_or("?").to_string();
+                                                let typ = v.as_str().unwrap_or("?").to_uppercase();
                                                 if is_variadic && i == param_arr.len() - 1 {
                                                     format!("{}...", typ)
                                                 } else {
@@ -783,9 +786,9 @@ mod tests {
         // New format: routine_parameters is array of structs, with is_variadic
         let output = r#"{"message_type":"DATA","data":[["date_add",[{"type":"text","name":"unit","default_value":null,"comment":""},{"type":"integer","name":"value","default_value":null,"comment":""},{"type":"timestamp","name":"date","default_value":null,"comment":""}],false],["coalesce",[{"type":"text","name":null,"default_value":null,"comment":""}],true],["upper",[{"type":"text","name":null,"default_value":null,"comment":""}],false]]}"#;
         let sigs = SchemaCache::parse_function_signatures(output).unwrap();
-        assert_eq!(sigs["date_add"], vec!["date_add(unit text, value integer, date timestamp)"]);
-        assert_eq!(sigs["coalesce"], vec!["coalesce(text...)"]);
-        assert_eq!(sigs["upper"], vec!["upper(text)"]);
+        assert_eq!(sigs["date_add"], vec!["date_add(unit TEXT, value INTEGER, date TIMESTAMP)"]);
+        assert_eq!(sigs["coalesce"], vec!["coalesce(TEXT...)"]);
+        assert_eq!(sigs["upper"], vec!["upper(TEXT)"]);
     }
 
     #[test]
@@ -793,8 +796,8 @@ mod tests {
         // Old format: routine_parameters is array of type strings, no is_variadic
         let output = r#"{"message_type":"DATA","data":[["upper",["text"]],["date_add",["text","integer","timestamp"]]]}"#;
         let sigs = SchemaCache::parse_function_signatures(output).unwrap();
-        assert_eq!(sigs["upper"], vec!["upper(text)"]);
-        assert_eq!(sigs["date_add"], vec!["date_add(text, integer, timestamp)"]);
+        assert_eq!(sigs["upper"], vec!["upper(TEXT)"]);
+        assert_eq!(sigs["date_add"], vec!["date_add(TEXT, INTEGER, TIMESTAMP)"]);
     }
 
     #[test]
