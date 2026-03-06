@@ -2887,7 +2887,7 @@ impl TuiApp {
             let (fname, params) = parse_sig(sig);
             let fname_owned = fname.to_owned();
 
-            if sig.len() <= max_w || params.len() <= 1 {
+            if sig.len() <= max_w {
                 // ── Single line ───────────────────────────────────────────
                 let mut spans: Vec<Span> = vec![
                     Span::styled(fname_owned, fname_style),
@@ -2900,23 +2900,43 @@ impl TuiApp {
                 spans.push(Span::styled(")".to_owned(), paren_style));
                 all_lines.push(Line::from(spans));
             } else {
-                // ── Multi-line: one param per line, aligned after "(" ─────
-                let indent = " ".repeat(fname.len() + 1);
-                for (i, p) in params.iter().enumerate() {
-                    let is_first = i == 0;
-                    let is_last  = i == params.len() - 1;
-                    let suffix   = if is_last { ")" } else { "," };
+                // ── Flow-wrap: pack as many params per line as fit ────────
+                // Continuation lines are indented to align under the first param.
+                let indent_w = fname.len() + 1;
+                let indent = " ".repeat(indent_w);
 
-                    let mut spans: Vec<Span> = Vec::new();
-                    if is_first {
-                        spans.push(Span::styled(fname_owned.clone(), fname_style));
-                        spans.push(Span::styled("(".to_owned(), paren_style));
-                    } else {
-                        spans.push(Span::raw(indent.clone()));
+                let mut cur_spans: Vec<Span> = vec![
+                    Span::styled(fname_owned.clone(), fname_style),
+                    Span::styled("(".to_owned(), paren_style),
+                ];
+                let mut cur_w = indent_w;
+
+                for (i, p) in params.iter().enumerate() {
+                    let is_last = i == params.len() - 1;
+                    let p_w = p.chars().count();
+                    // Cost of adding this param: p_w + 1 for ")" or p_w + 2 for ", "
+                    let cost = p_w + if is_last { 1 } else { 2 };
+
+                    if i > 0 && cur_w + cost > max_w {
+                        // Wrap: end current line with trailing comma, start new
+                        cur_spans.push(Span::styled(",".to_owned(), paren_style));
+                        all_lines.push(Line::from(std::mem::take(&mut cur_spans)));
+                        cur_spans.push(Span::raw(indent.clone()));
+                        cur_w = indent_w;
+                    } else if i > 0 {
+                        cur_spans.push(Span::styled(", ".to_owned(), paren_style));
+                        cur_w += 2;
                     }
-                    spans.extend(style_param(p, name_style, type_style, arrow_style, dflt_style));
-                    spans.push(Span::styled(suffix.to_owned(), paren_style));
-                    all_lines.push(Line::from(spans));
+
+                    cur_spans.extend(style_param(p, name_style, type_style, arrow_style, dflt_style));
+                    cur_w += p_w;
+
+                    if is_last {
+                        cur_spans.push(Span::styled(")".to_owned(), paren_style));
+                    }
+                }
+                if !cur_spans.is_empty() {
+                    all_lines.push(Line::from(cur_spans));
                 }
             }
         }
