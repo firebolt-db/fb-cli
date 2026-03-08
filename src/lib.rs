@@ -44,7 +44,8 @@ pub async fn run(raw_args: Vec<String>) -> i32 {
     }
 
     if args.help {
-        println!("Usage: fb [OPTIONS] [QUERY...]");
+        let prog = raw_args.first().map(String::as_str).unwrap_or("fb");
+        println!("Usage: {prog} [OPTIONS] [QUERY...]");
         println!();
         println!("{}", args::Args::usage());
         return 0;
@@ -154,6 +155,15 @@ pub fn exit_code_for(e: &Box<dyn std::error::Error>) -> i32 {
         eprintln!("Error: {}", e);
         ErrorKind::SystemError as i32
     }
+}
+
+/// Returns the gumdrop-generated options block as a null-terminated C string.
+/// The caller is responsible for freeing the pointer with `free()`.
+#[no_mangle]
+pub extern "C" fn fb_cli_usage_string() -> *mut c_char {
+    std::ffi::CString::new(args::Args::usage())
+        .unwrap_or_default()
+        .into_raw()
 }
 
 /// C-callable entry point. `argc`/`argv` mirror the process argv so the caller
