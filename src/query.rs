@@ -432,7 +432,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
 
     // Show spinner in non-interactive mode only for client-side formats.
     let spin_token = CancellationToken::new();
-    let maybe_spin = if !context.is_tui() && context.args.should_render_table() {
+    let mut maybe_spin = if !context.is_tui() && context.args.should_render_table() {
         let t = spin_token.clone();
         Some(task::spawn(async move { spin(t).await; }))
     } else {
@@ -453,6 +453,11 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
             error_kind = Some(ErrorKind::SystemError);
         }
         response = async_resp => {
+            // Erase the spinner before producing any output, so the backspace
+            // sequence lands on the spinner character and not on the table.
+            spin_token.cancel();
+            if let Some(s) = maybe_spin.take() { let _ = s.await; }
+
             let elapsed = start.elapsed();
 
             let mut maybe_request_id: Option<String> = None;
