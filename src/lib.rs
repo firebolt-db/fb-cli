@@ -18,6 +18,7 @@ pub mod utils;
 pub mod viewer;
 
 use args::get_args_from;
+use gumdrop::Options as _;
 use auth::maybe_authenticate;
 use completion::schema_cache::SchemaCache;
 use completion::usage_tracker::UsageTracker;
@@ -39,6 +40,13 @@ pub async fn run(raw_args: Vec<String>) -> i32 {
 
     if args.version {
         println!("fb-cli version {}", CLI_VERSION);
+        return 0;
+    }
+
+    if args.help {
+        println!("Usage: fb [OPTIONS] [QUERY...]");
+        println!();
+        println!("{}", args::Args::usage());
         return 0;
     }
 
