@@ -201,5 +201,6 @@ fb-cli uses a single `--format` option with a prefix notation to distinguish bet
 - **Ctrl+C in TUI**: Cancels an in-flight query; does not exit
 - **Ctrl+D in TUI**: Exits
 - **Ctrl+V in TUI**: Opens csvlens viewer for the last result directly
+- **Alt+E in TUI**: Opens current query in $EDITOR
 - **Spinner**: Shown during query execution for client-side formats only
 - **History**: Saved to `~/.firebolt/fb_history` (max 10,000 entries), supports Ctrl+R search

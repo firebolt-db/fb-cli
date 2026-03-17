@@ -930,8 +930,8 @@ impl TuiApp {
                 self.open_viewer();
             }
 
-            // ── Ctrl+E: open in $EDITOR ───────────────────────────────────
-            (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => {
+            // ── Alt+E: open in $EDITOR ────────────────────────────────────
+            (KeyCode::Char('e'), m) if m.contains(KeyModifiers::ALT) => {
                 self.pending_editor = true;
             }
 
@@ -3075,7 +3075,7 @@ impl TuiApp {
             ("Ctrl+D",           "Exit"),
             ("Ctrl+C",           "Cancel input / cancel running query"),
             ("Ctrl+V",           "Open last result in csvlens viewer"),
-            ("Ctrl+E",           "Open current query in $EDITOR"),
+            ("Alt+E",            "Open current query in $EDITOR"),
             ("Ctrl+R",           "Reverse history search"),
             ("Ctrl+Space",       "Fuzzy schema search"),
             ("Ctrl+Up/Down",     "Cycle through history (older / newer)"),
@@ -3230,7 +3230,7 @@ impl TuiApp {
         } else if self.completion_state.is_some() {
             " Enter accept  Tab/↑/↓ navigate  Esc close ".to_string()
         } else {
-            " Ctrl+H help  Ctrl+D exit  Ctrl+Space fuzzy  Ctrl+E editor  Ctrl+V viewer  Alt+F format  Tab complete ".to_string()
+            " Ctrl+H help  Ctrl+D exit  Ctrl+Space fuzzy  Alt+E editor  Ctrl+V viewer  Alt+F format  Tab complete".to_string()
         };
 
         let total = area.width as usize;
