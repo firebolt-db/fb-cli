@@ -212,6 +212,10 @@ pub fn set_args(context: &mut Context, query: &str) -> Result<bool, Box<dyn std:
     if key == "format" {
         context.args.format = String::from(value);
     } else {
+        if key == "database" {
+            context.args.database = String::from(value);
+        }
+
         let mut buf: Vec<String> = vec![];
         buf.push(format!("{key}={value}"));
         buf = normalize_extras(buf, true)?;
@@ -986,6 +990,13 @@ mod tests {
         let result = set_args(&mut context, query).unwrap();
         assert!(result);
         assert!(context.args.extra.iter().any(|e| e == "engine=default"));
+
+        // Test setting database updates both args.database and args.extra
+        let query = "set database = mydb";
+        let result = set_args(&mut context, query).unwrap();
+        assert!(result);
+        assert_eq!(context.args.database, "mydb");
+        assert!(context.args.extra.iter().any(|e| e == "database=mydb"));
 
         // Test with comments before SET command
         let query = "-- Setting a parameter\nset test = value";

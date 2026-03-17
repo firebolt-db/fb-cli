@@ -708,6 +708,9 @@ impl TuiApp {
                     self.context.last_result = Some(result);
                 }
                 Ok(TuiMsg::ParamUpdate(extras)) => {
+                    if let Some(db) = extras.iter().find_map(|e| e.strip_prefix("database=")) {
+                        self.context.args.database = db.to_string();
+                    }
                     self.context.args.extra = extras;
                     self.context.update_url();
                 }
