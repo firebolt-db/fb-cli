@@ -1,4 +1,4 @@
-use gumdrop::Options;
+use gumdrop::{Options, ParsingStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,6 +20,20 @@ impl Or for String {
     }
 }
 
+// Default value functions for serde
+fn default_min_col_width() -> usize {
+    15
+}
+
+fn default_max_cell_length() -> usize {
+    1000
+}
+
+
+fn default_cache_ttl() -> u64 {
+    300
+}
+
 #[derive(Clone, Debug, Options, Deserialize, Serialize)]
 pub struct Args {
     #[options(help = "Run a single command and exit")]
@@ -38,8 +52,8 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub database: String,
 
-    #[options(help = "Output format (e.g., TabSeparatedWithNames, PSQL, JSONLines_Compact, Vertical, ...)")]
-    #[serde(default)]
+    #[options(help = "Output format (client:auto, client:vertical, client:horizontal, PSQL, JSON_Compact, JSONLines_Compact, TabSeparatedWithNamesAndTypes, ...)")]
+    #[serde(skip_serializing, skip_deserializing)]
     pub format: String,
 
     #[options(help = "Extra settings in the form --extra <name>=<value>")]
@@ -66,7 +80,6 @@ pub struct Args {
     #[serde(default)]
     pub jwt_from_file: bool,
 
-
     #[options(
         no_short,
         help = "OAuth environment to use (e.g., 'app' or 'staging'). Used for Service Account authentication",
@@ -79,33 +92,85 @@ pub struct Args {
     #[serde(default)]
     pub verbose: bool,
 
-    #[options(no_short, help = "Suppress time statistics in output")]
-    #[serde(default)]
-    pub concise: bool,
-
     #[options(no_short, help = "Hide URLs that may contain PII in query parameters")]
     #[serde(default)]
     pub hide_pii: bool,
 
-    #[options(no_short, help = "Disable the spinner in CLI output")]
-    #[serde(default)]
-    pub no_spinner: bool,
+    #[options(no_short, help = "Minimum characters per column before switching to vertical mode", default = "15")]
+    #[serde(default = "default_min_col_width")]
+    pub min_col_width: usize,
+
+    #[options(no_short, help = "Maximum cell content length before truncation", default = "1000")]
+    #[serde(default = "default_max_cell_length")]
+    pub max_cell_length: usize,
+
 
     #[options(no_short, help = "Update default configuration values")]
     #[serde(skip_serializing, skip_deserializing)]
     pub update_defaults: bool,
 
+    #[options(no_short, help = "Disable syntax highlighting in REPL")]
+    #[serde(default)]
+    pub no_color: bool,
+
+    #[options(no_short, help = "Disable auto-completion in REPL")]
+    #[serde(default)]
+    pub no_completion: bool,
+
+    #[options(no_short, help = "Schema cache TTL in seconds (default: 300)")]
+    #[serde(default = "default_cache_ttl")]
+    pub completion_cache_ttl: u64,
+
     #[options(help = "Print version")]
     #[serde(default)]
     pub version: bool,
+
+    #[options(no_short, help = "Connect to server via Unix domain socket at this path")]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub unix_socket: String,
 
     #[options(no_short, help = "Show help message and exit")]
     #[serde(skip_serializing, skip_deserializing)]
     pub help: bool,
 
+    #[options(
+        short = "p",
+        help = "Query parameter value; positional: first -p is $1, second is $2, etc. \
+                Values are auto-typed: integers, floats, booleans, NULL, or strings."
+    )]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub params: Vec<String>,
+
     #[options(free, help = "Query command(s) to execute. If not specified, starts the REPL")]
     #[serde(skip_serializing, skip_deserializing)]
     pub query: Vec<String>,
+}
+
+impl Args {
+    pub fn should_render_table(&self) -> bool {
+        // Client rendering when format starts with "client:"
+        self.format.starts_with("client:")
+    }
+
+    /// Extract display mode from client: prefix
+    /// "client:auto" → "auto", "client:vertical" → "vertical", "PSQL" → ""
+    pub fn get_display_mode(&self) -> &str {
+        if self.format.starts_with("client:") {
+            &self.format[7..] // Skip "client:" prefix
+        } else {
+            ""
+        }
+    }
+
+    pub fn is_vertical_display(&self) -> bool {
+        self.get_display_mode().eq_ignore_ascii_case("vertical")
+    }
+
+    pub fn is_horizontal_display(&self) -> bool {
+        self.get_display_mode().eq_ignore_ascii_case("horizontal")
+    }
+
+
 }
 
 pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -139,8 +204,13 @@ pub fn normalize_extras(extras: Vec<String>, encode: bool) -> Result<Vec<String>
 }
 
 // Apply defaults and possibly update them.
-#[allow(dead_code)]
 pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
+    let raw: Vec<String> = std::env::args().collect();
+    get_args_from(&raw)
+}
+
+/// Like `get_args()` but parses from an explicit argv slice (raw[0] is the program name).
+pub fn get_args_from(raw: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let config_path = config_path()?;
 
     let defaults: Args = if config_path.exists() {
@@ -149,7 +219,14 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         serde_yaml::from_str("")?
     };
 
-    let mut args = Args::parse_args_default_or_exit();
+    let skip = raw.len().min(1);
+    let mut args = match Args::parse_args(&raw[skip..], ParsingStyle::default()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        }
+    };
 
     args.extra = normalize_extras(args.extra, true)?;
 
@@ -173,28 +250,35 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
 
     if args.update_defaults {
         args.host = args.host.or(default_host);
-        if args.core {
-            args.format = args.format.or(String::from("PSQL"));
-        } else {
-            args.format = args.format.or(String::from("TabSeparatedWithNamesAndTypes"));
-        }
-
         fs::write(&config_path, serde_yaml::to_string(&args)?)?;
         return Ok(args);
     }
 
     args.verbose = args.verbose || defaults.verbose;
-    args.concise = args.concise || defaults.concise;
     args.hide_pii = args.hide_pii || defaults.hide_pii;
+
+    // Use defaults for numeric settings if not specified
+    if args.min_col_width == default_min_col_width() {
+        args.min_col_width = defaults.min_col_width;
+    }
+    if args.max_cell_length == default_max_cell_length() {
+        args.max_cell_length = defaults.max_cell_length;
+    }
+
+    args.database = args
+        .database
+        .or(args.core.then(|| String::from("firebolt")).unwrap_or(defaults.database))
+        .or(String::from("local_dev_db"));
 
     if args.core {
         args.host = args.host.or(String::from("localhost:3473"));
         args.jwt = String::from("");
-        args.format = args.format.or(String::from("PSQL"));
     } else {
-        args.format = args.format.or(defaults.format).or(String::from("PSQL"));
         args.host = args.host.or(defaults.host).or(default_host);
     }
+
+    // Default to client:auto unless --format was explicitly provided.
+    args.format = args.format.or(String::from("client:auto"));
 
     if !args.extra.is_empty() {
         let mut extras = normalize_extras(defaults.extra, true)?;
@@ -202,7 +286,47 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         args.extra = normalize_extras(extras, false)?;
     }
 
+    // Warn if user specified a client format name without the "client:" prefix
+    if args.format.eq_ignore_ascii_case("auto")
+        || args.format.eq_ignore_ascii_case("vertical")
+        || args.format.eq_ignore_ascii_case("horizontal")
+    {
+        eprintln!("Warning: Format '{}' is not supported by the server.", args.format);
+        eprintln!("Did you mean '--format client:{}'?", args.format.to_lowercase());
+        eprintln!("Client-side formats require the 'client:' prefix (e.g., client:auto, client:vertical, client:horizontal)");
+        eprintln!();
+    }
+
     Ok(args)
+}
+
+/// Infer the JSON type of a query parameter value.
+///
+/// Rules (tried in order):
+/// - `null` / `NULL`  → JSON null
+/// - `true` / `false` → JSON boolean
+/// - Parses as i64    → JSON integer
+/// - Parses as f64    → JSON float
+/// - Otherwise        → JSON string
+fn param_to_json_value(s: &str) -> serde_json::Value {
+    if s.eq_ignore_ascii_case("null") {
+        return serde_json::Value::Null;
+    }
+    if s.eq_ignore_ascii_case("true") {
+        return serde_json::Value::Bool(true);
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return serde_json::Value::Bool(false);
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return serde_json::Value::Number(i.into());
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return serde_json::Value::Number(n);
+        }
+    }
+    serde_json::Value::String(s.to_string())
 }
 
 // Create URL from Args
@@ -228,14 +352,33 @@ pub fn get_url(args: &Args) -> String {
     let is_localhost = args.host.starts_with("localhost");
     let protocol = if is_localhost { "http" } else { "https" };
     let output_format = if !args.format.is_empty() && !args.extra.iter().any(|e| e.starts_with("format=")) {
-        format!("&output_format={}", args.format)
+        if args.format.starts_with("client:") {
+            // Client-side rendering: always use JSONLines_Compact
+            "&output_format=JSONLines_Compact".to_string()
+        } else {
+            // Server-side rendering: use format as-is
+            format!("&output_format={}", &args.format)
+        }
     } else {
         String::new()
     };
     let advanced_mode = if is_localhost { "" } else { "&advanced_mode=1" };
 
+    let query_parameters = if args.params.is_empty() {
+        String::new()
+    } else {
+        let arr: Vec<serde_json::Value> = args.params.iter().enumerate()
+            .map(|(i, v)| serde_json::json!({
+                "name": format!("${}", i + 1),
+                "value": param_to_json_value(v),
+            }))
+            .collect();
+        let json = serde_json::to_string(&arr).unwrap_or_default();
+        format!("&query_parameters={}", urlencoding::encode(&json))
+    };
+
     format!(
-        "{protocol}://{host}/?{database}{query_label}{extra}{output_format}{advanced_mode}",
+        "{protocol}://{host}/?{database}{query_label}{extra}{output_format}{advanced_mode}{query_parameters}",
         host = args.host
     )
 }
@@ -336,5 +479,137 @@ mod tests {
         assert_eq!(result[0], "param1=value%20with%20spaces");
         assert_eq!(result[1], "param2=value%20with%20spaces");
         assert_eq!(result[2], "param3=%20%20value%20with%20spaces%20");
+    }
+
+    #[test]
+    fn test_should_render_table_with_client_prefix() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        // Server-side format: should not render
+        args.format = String::from("PSQL");
+        assert!(!args.should_render_table());
+
+        args.format = String::from("JSON");
+        assert!(!args.should_render_table());
+
+        // Client-side format: should render
+        args.format = String::from("client:auto");
+        assert!(args.should_render_table());
+
+        args.format = String::from("client:vertical");
+        assert!(args.should_render_table());
+
+        args.format = String::from("client:horizontal");
+        assert!(args.should_render_table());
+    }
+
+    #[test]
+    fn test_get_display_mode() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        // Client formats
+        args.format = String::from("client:auto");
+        assert_eq!(args.get_display_mode(), "auto");
+
+        args.format = String::from("client:vertical");
+        assert_eq!(args.get_display_mode(), "vertical");
+
+        args.format = String::from("client:horizontal");
+        assert_eq!(args.get_display_mode(), "horizontal");
+
+        // Server formats
+        args.format = String::from("PSQL");
+        assert_eq!(args.get_display_mode(), "");
+
+        args.format = String::from("JSON");
+        assert_eq!(args.get_display_mode(), "");
+    }
+
+    #[test]
+    fn test_display_mode_helpers() {
+        let mut args = Args::parse_args_default_or_exit();
+
+        args.format = String::from("client:auto");
+        assert!(!args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+
+        args.format = String::from("client:vertical");
+        assert!(args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+
+        args.format = String::from("client:horizontal");
+        assert!(!args.is_vertical_display());
+        assert!(args.is_horizontal_display());
+
+        args.format = String::from("PSQL");
+        assert!(!args.is_vertical_display());
+        assert!(!args.is_horizontal_display());
+    }
+
+    #[test]
+    fn test_param_to_json_value() {
+        assert_eq!(param_to_json_value("null"), serde_json::Value::Null);
+        assert_eq!(param_to_json_value("NULL"), serde_json::Value::Null);
+        assert_eq!(param_to_json_value("true"), serde_json::Value::Bool(true));
+        assert_eq!(param_to_json_value("false"), serde_json::Value::Bool(false));
+        assert_eq!(param_to_json_value("42"), serde_json::json!(42i64));
+        assert_eq!(param_to_json_value("-7"), serde_json::json!(-7i64));
+        assert_eq!(param_to_json_value("3.14"), serde_json::json!(3.14f64));
+        assert_eq!(param_to_json_value("hello"), serde_json::json!("hello"));
+        assert_eq!(param_to_json_value("42abc"), serde_json::json!("42abc"));
+    }
+
+    #[test]
+    fn test_get_url_with_params() {
+        let mut args = Args::parse_args_default_or_exit();
+        args.host = "localhost:8123".to_string();
+        args.database = "test_db".to_string();
+        args.format = "PSQL".to_string();
+        args.params = vec!["42".to_string(), "alice".to_string(), "true".to_string()];
+
+        let url = get_url(&args);
+        // Should contain URL-encoded JSON array
+        assert!(url.contains("query_parameters="), "URL should contain query_parameters");
+        // Decode and verify content
+        let encoded = url.split("query_parameters=").nth(1).unwrap().split('&').next().unwrap();
+        let decoded = urlencoding::decode(encoded).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["name"], "$1");
+        assert_eq!(arr[0]["value"], 42i64);
+        assert_eq!(arr[1]["name"], "$2");
+        assert_eq!(arr[1]["value"], "alice");
+        assert_eq!(arr[2]["name"], "$3");
+        assert_eq!(arr[2]["value"], true);
+    }
+
+    #[test]
+    fn test_get_url_without_params() {
+        let mut args = Args::parse_args_default_or_exit();
+        args.host = "localhost:8123".to_string();
+        args.format = "PSQL".to_string();
+
+        let url = get_url(&args);
+        assert!(!url.contains("query_parameters="));
+    }
+
+    #[test]
+    fn test_format_without_client_prefix() {
+        // Test that formats "auto", "vertical", "horizontal" without "client:" prefix
+        // are recognized (they will trigger a warning at runtime, but are valid format strings)
+        let mut args = Args::parse_args_default_or_exit();
+
+        args.format = String::from("auto");
+        assert!(!args.should_render_table()); // Should NOT render because no "client:" prefix
+        assert_eq!(args.get_display_mode(), ""); // Empty because no prefix
+
+        args.format = String::from("vertical");
+        assert!(!args.should_render_table());
+        assert_eq!(args.get_display_mode(), "");
+
+        args.format = String::from("horizontal");
+        assert!(!args.should_render_table());
+        assert_eq!(args.get_display_mode(), "");
     }
 }

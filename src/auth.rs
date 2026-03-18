@@ -15,6 +15,7 @@ pub async fn authenticate_service_account(context: &mut Context) -> Result<(), B
         }
     }
 
+    let show_spinner = !context.is_tui() && context.args.should_render_table();
     let args = &mut context.args;
     if args.sa_id.is_empty() {
         return Err("Missing Service Account ID (--sa-id)".into());
@@ -72,13 +73,13 @@ pub async fn authenticate_service_account(context: &mut Context) -> Result<(), B
     let async_resp = async_req.send();
 
     let token = CancellationToken::new();
-    let maybe_spin = if args.no_spinner || args.concise {
-        None
-    } else {
+    let maybe_spin = if show_spinner {
         let token_clone = token.clone();
         Some(task::spawn(async {
             spin(token_clone).await;
         }))
+    } else {
+        None
     };
 
     let response = async_resp.await;

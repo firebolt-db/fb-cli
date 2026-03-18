@@ -6,11 +6,21 @@ license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "fb"
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
-rustyline = { version = "12.0.0", features = ["case_insensitive_history_search"] }
+ratatui = "0.29"
+tui-textarea = "0.7"
+crossterm = "0.28"
 gumdrop = { version = "0.8.1", features = ["default_expr"] }
 reqwest = { version = "0.12", features = ["json", "http2"] }
-openssl = { version = "*", features = ["vendored"] } 
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+openssl = { version = "*", features = ["vendored"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.10"
 dirs = "5.0"
@@ -23,3 +33,7 @@ toml = "0.8"
 urlencoding = "2.1"
 pest = "2.7"
 pest_derive = "2.7"
+terminal_size = "0.3"
+csvlens = "0.14"
+nucleo-matcher = "0.3.1"
+sqlformat = "0.5.0"

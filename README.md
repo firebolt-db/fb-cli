@@ -1,249 +1,465 @@
 # fb-cli
 
-Firebolt CLI; work with [Firebolt](https://www.firebolt.io/) and [Firebolt Core](https://github.com/firebolt-db/firebolt-core).
+Command-line client for [Firebolt](https://www.firebolt.io/) and [Firebolt Core](https://github.com/firebolt-db/firebolt-core).
 
-## Examples
-
-```
-➤  fb select 42
- ?column?
----------
-       42
-
-Time: 41.051ms
-```
-
-### REPL
+## Quick Start
 
 ```
-➤  fb
-=> select 42
- ?column?
----------
-       42
-
-Time: 40.117ms
-
-=> create table t (a int);
-Table 't' already exists.
-
-Time: 87.747ms
-
-=> insert into t select * from generate_series(1, 100000000);
-/
+fb --core "SELECT 42"
 ```
 
-Also support history + search in it (`CTRL+R`).
-
-## Help
-
 ```
-➤ fb --help
-Usage: fb [OPTIONS]
-
-Positional arguments:
-  query                    Query command(s) to execute. If not specified, starts the REPL
-
-Optional arguments:
-  -c, --command COMMAND    Run a single command and exit
-  -C, --core               Preset of settings to connect to Firebolt Core
-  -h, --host HOSTNAME      Hostname (and port) to connect to
-  -d, --database DATABASE  Database name to use
-  -f, --format FORMAT      Output format (e.g., TabSeparatedWithNames, PSQL, JSONLines_Compact, Vertical, ...)
-  -e, --extra EXTRA        Extra settings in the form --extra <name>=<value>
-  -l, --label LABEL        Query label for tracking or identification
-  -j, --jwt JWT            JWT for authentication
-  --sa-id SA-ID            Service Account ID for OAuth authentication
-  --sa-secret SA-SECRET    Service Account Secret for OAuth authentication
-  --jwt-from-file          Load JWT from file (~/.firebolt/jwt)
-  --oauth-env OAUTH-ENV    OAuth environment to use (e.g., 'app' or 'staging'). Used for Service Account authentication (default: staging)
-  -v, --verbose            Enable extra verbose output
-  --concise                Suppress time statistics in output
-  --hide-pii               Hide URLs that may contain PII in query parameters
-  --no-spinner             Disable the spinner in CLI output
-  --update-defaults        Update default configuration values
-  -V, --version            Print version
-  --help                   Show help message and exit
+fb --host api.us-east-1.app.firebolt.io \
+   --extra account_id=<account_id> \
+   --jwt '<token>' \
+   -d <database>
 ```
 
 ## Install
 
-1) Install `cargo`: https://doc.rust-lang.org/cargo/getting-started/installation.html 
-    1) Add `source "$HOME/.cargo/env"` to your `~/.bashrc` (or `~/.zshrc`).
-2) Install `pkg-config`: `sudo apt install pkg-config` (a default dependency for Ubuntu)
-3) Install `openssl`: `sudo apt install libssl-dev` (a default dependency for Ubuntu)
-4) Clone & Build & Install:
+1. Install `cargo`: https://doc.rust-lang.org/cargo/getting-started/installation.html
+2. Install system dependencies (Ubuntu): `sudo apt install pkg-config libssl-dev`
+3. Clone, build, and install:
+
 ```
 git clone git@github.com:firebolt-db/fb-cli.git
 cd fb-cli
 cargo install --path . --locked
 ```
-4) That's it: you should be able to run `fb` // or at least `~/.cargo/bin/fb` if cargo env isn't caught up.
 
-## Shortcuts
+Run `fb` (or `~/.cargo/bin/fb` if cargo's bin directory is not on `$PATH`).
 
-Most of them from https://github.com/kkawakam/rustyline:
+## Usage
 
-| Keystroke             | Action                                                                      |
-| --------------------- | --------------------------------------------------------------------------- |
-| Enter                 | Finish the line entry                                                       |
-| Ctrl-R                | Reverse Search history (Ctrl-S forward, Ctrl-G cancel)                      |
-| Ctrl-U                | Delete from start of line to cursor                                         |
-| Ctrl-W                | Delete word leading up to cursor (using white space as a word boundary)     |
-| Ctrl-Y                | Paste from Yank buffer                                                      |
-| Ctrl-\_               | Undo                                                                        |
-
-Some of them specific to `fb`:
-| Keystroke             | Action                                                                      |
-| --------------------- | --------------------------------------------------------------------------- |
-| Ctrl-C                | Cancel current input.                                                       |
-| Ctrl-O                | Insert a newline                                                            |
-
-
-## Defaults
-
-Can update defaults one and for all by specifying `--update-defaults`: during this application old defaults are **not** applied.
-
-New defaults are going to be stored at `~/.firebolt/fb_config`.
-
-
+**Single query (non-interactive):**
 ```
-~ ➤  fb select 42
- ?column?
----------
-       42
-
-Time: 40.342ms
-
-~ ➤  fb select 42 --format CSVWithNames --concise --update-defaults
-"?column?"
-42
-
-~ ➤  fb select 42
-"?column?"
-42
-
-~ ➤  fb select 42 --verbose # defauls are merged with new args
-URL: http://localhost:8123/?database=local_dev_db&mask_internal_errors=1
-QUERY: select 42
-"?column?"
-42
+fb "SELECT 42"
+fb -c "SELECT 42"
+fb --core "SELECT * FROM information_schema.tables LIMIT 5"
 ```
 
-## Queries against FB 2.0 using Service Account
-
-Specify:
-- Service Account ID;
-- Service Account Secret;
-- Environment
-
-Note: The token is saved in `~/.firebolt/fb_sa_token/` and will be reused if the account ID and secret match and the token is less than half an hour old.
-
-
+**Interactive REPL:**
 ```
-➤  fb --sa-id=${SA_ID} --sa-secret=${SA_SECRET} --oauth-env=app \
-  -h ${ACCOUNT_ID}.api.us-east-1.app.firebolt.io -d ${DATABASE_NAME}
+fb
+fb --core
 ```
 
-Read more about getting service accounts [here](https://docs.firebolt.io/guides/managing-your-organization/service-accounts).
+**Pipe mode:**
+```
+echo "SELECT 1; SELECT 2;" | fb --core
+cat queries.sql | fb --core
+```
 
-## Queries against FB 2.0
+## Interactive REPL
 
-Specify:
-- host;
-- account_id;
-- JWT token (can be obtained from browser or other authentication methods);
+The REPL uses a full-terminal layout:
 
 ```
-➤  fb --host api.us-east-1.app.firebolt.io --verbose --extra account_id=12312312312 --jwt 'eyJhbGciOiJSUzI1NiI...'
+┌───────────────────────────────────────────────┐
+│ OUTPUT  (scrollable)                          │
+│  previous queries, results, timing, errors    │
+│                                               │
+├───────────────────────────────────────────────┤
+│ INPUT  (multi-line editor)                    │
+│  SELECT *                                     │
+│  FROM orders                                  │
+│                                               │
+├───────────────────────────────────────────────┤
+│  localhost:3473 | firebolt    Tab complete …  │
+└───────────────────────────────────────────────┘
+```
 
-=> show engines
-URL: https://api.us-east-1.app.firebolt.io/?database=db_1&account_id=12312312&output_format=JSON&advanced_mode=1
-QUERY: show engines
-┌─engine_name─────────────┬─engine_owner────────────────┬─type─┬─nodes─┬─clusters─┬─status───────────────┬─auto_start─┬─auto_stop─┬─initially_stopped─┬─url────────────────────────────────────────────────────────────────────────────────────────────────────┬─default_database───────────────────┬─version─┬─last_started──────────────────┬─last_stopped──────────────────┬─description─┐
-│ pre_demo_engine1        │ user@firebolt.io            │ S    │     2 │        1 │ ENGINE_STATE_STOPPED │          t │        20 │                 f │ api.us-east-1.app.firebolt.io?account_id=1321231&engine=pre_demo_engine1                               │                                    │ latest  │ 2024-02-07 01:19:19.81689+00  │ 2024-02-07 01:44:15.930845+00 │             │
-│ pre_demo_engine2        │ user@firebolt.io            │ S    │     2 │        1 │ ENGINE_STATE_STOPPED │          t │        20 │                 f │ api.us-east-1.app.firebolt.io?account_id=1321231&engine=pre_demo_engine2                               │        pre_demo_validation_testdb1 │ latest  │ 2024-02-07 01:21:36.274962+00 │ 2024-02-07 02:32:05.403539+00 │             │
-└─────────────────────────┴─────────────────────────────┴──────┴───────┴──────────┴──────────────────────┴────────────┴───────────┴───────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────────────┴────────────────────────────────────┴─────────┴───────────────────────────────┴───────────────────────────────┴─────────────┘
+Enter submits the query when SQL is complete (ends with `;`). An incomplete statement gets a newline instead, allowing natural multi-line editing.
 
-=> set engine=user5_engine_1
-URL: https://api.us-east-1.app.firebolt.io/?database=db_1&engine=user5_engine_1&account_id=1321231&output_format=JSON&advanced_mode=1
+### Key Bindings
 
-=> select 42
-URL: https://api.us-east-1.app.firebolt.io/?database=db_1&engine=user5_engine_1&account_id=1321231&output_format=JSON&advanced_mode=1
-QUERY: select 42
- ?column?
----------
-       42
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit query (if SQL complete) or insert newline |
+| `Shift+Enter` / `Alt+Enter` | Always insert newline (even after `;`) |
+| `Ctrl+C` | Cancel current input, or cancel an in-flight query |
+| `Ctrl+D` | Exit |
+| `Ctrl+H` | Show / hide help popup |
+| `Ctrl+Up` / `Ctrl+Down` | Navigate history (older / newer) |
+| `Ctrl+R` | Reverse history search |
+| `Tab` | Open completion popup (or advance to next item) |
+| `Shift+Tab` | Navigate completion popup backward |
+| `Ctrl+Space` | Fuzzy schema search (tables, columns, functions) |
+| `Ctrl+V` | Open last result in interactive viewer (csvlens) |
+| `Ctrl+E` | Open current query in `$EDITOR` (falls back to `vi`) |
+| `Ctrl+Z` | Undo last edit |
+| `Ctrl+Y` | Redo |
+| `Alt+F` | Format SQL in the editor (uppercase keywords, 2-space indent) |
+| `Page Up` / `Page Down` | Scroll output pane |
+| `Escape` | Close any open popup |
 
-Time: 275.639ms
+### Tab Completion
+
+Tab completion suggests table names, column names, and functions based on the current cursor context (FROM clause, SELECT list, WHERE clause, etc.). The schema is fetched from the server and cached for `--completion-cache-ttl` seconds (default 300).
+
+When all suggestions share a common prefix, that prefix is completed immediately (bash-style). A second Tab opens the popup to choose among remaining candidates.
+
+`Ctrl+Space` opens a fuzzy search overlay that searches the full schema regardless of cursor context.
+
+### Ctrl+R History Search
+
+Incremental reverse search over the session history. Type to filter; `Ctrl+R` again for the next older match; `Up`/`Down` to navigate matches; `Left`/`Right` to move within the search query; `Ctrl+A` to jump to the start; `Enter` to accept; `Esc` to cancel.
+
+### Ctrl+V Viewer
+
+Opens the last query result in [csvlens](https://github.com/YS-L/csvlens) — a full-screen interactive table viewer with sorting, filtering, and fuzzy search. Requires a client-side output format (`client:*`).
+
+## Slash Commands
+
+Type these directly in the REPL (or pass with `-c`):
+
+| Command | Description |
+|---------|-------------|
+| `/exit` | Exit the REPL (also: `/quit`, `exit`, `quit`) |
+| `/refresh` | Refresh the schema completion cache |
+| `/view` | Open last result in csvlens viewer (same as `Ctrl+V`) |
+| `/qh [limit] [minutes]` | Show recent query history. Default: 100 rows, last 60 minutes |
+| `/run @<file>` | Execute all SQL queries from a file (Tab completes path) |
+| `/run <query>` | Execute an inline SQL query |
+| `/benchmark [N] @<file>\|<query>` | Benchmark a query: 1 warmup + N timed runs (default N=3) |
+| `/watch [N] @<file>\|<query>` | Re-run query every N seconds (default 5); `Ctrl+C` stops |
+| `set key=value;` | Set a server-side query parameter |
+| `unset key;` | Remove a query parameter |
+| `.format = value` | Set client output format (e.g. `client:auto`, `client:vertical`) |
+| `.completion = on\|off` | Enable or disable tab completion |
+
+### `@<file>` syntax
+
+`/run`, `/benchmark`, and `/watch` all accept either an inline SQL query or a reference to a file using the `@<file>` prefix:
+
+```
+/run @~/queries/report.sql
+/run SELECT 42;
+
+/benchmark 10 @query.sql
+/benchmark SELECT count(*) FROM large_table;
+
+/watch 5 @monitor.sql
+/watch 2 SELECT now();
+```
+
+Tab after `/run ` suggests `@`. Tab after `/run @` completes file names.
+Tab at `/` shows all available commands.
+
+### `/qh` — Query History
+
+`/qh [limit] [minutes]`
+
+- `limit` — maximum number of rows to return (default: 100)
+- `minutes` — look back window in minutes (default: 60)
+
+```
+/qh           -- last 100 queries from the past hour
+/qh 50        -- last 50 queries from the past hour
+/qh 200 1440  -- last 200 queries from the past day
+```
+
+Shorthand for:
+
+```sql
+SELECT *
+FROM information_schema.engine_user_query_history
+WHERE start_time > now() - interval '<minutes> minutes'
+ORDER BY start_time DESC
+LIMIT <limit>;
+```
+
+### `/benchmark` — Benchmark Mode
+
+Runs a query multiple times, discards the first result as warmup, and reports timing statistics. Result cache is automatically disabled for accurate measurements.
+
+```
+/benchmark SELECT count(*) FROM large_table
+/benchmark 10 SELECT count(*) FROM large_table
+```
+
+Output example:
+```
+  warmup: 412.3ms
+  run 1/3: 398.1ms  [result rows...]
+  run 2/3: 401.7ms
+  run 3/3: 395.4ms
+Results: min=395.4ms  avg=398.4ms  p90=401.7ms  max=401.7ms
+```
+
+`Ctrl+C` cancels a benchmark in progress.
+
+## Output Formats
+
+### Client-Side Rendering (default)
+
+The default format is `client:auto`, which fetches results as JSON and renders them in the terminal. The layout adapts to the number of columns:
+
+- **Horizontal** (few columns): standard bordered table
+- **Vertical** (many columns or `client:vertical`): one column per row
+- **Auto** (`client:auto`): automatically picks horizontal or vertical based on column count and terminal width
+
+```
+=> SELECT query_id, status, duration_usec FROM information_schema.engine_query_history LIMIT 3;
++------------------+---------+--------------+
+| query_id         | status  | duration_usec |
++==================+=========+==============+
+| abc123...        | ENDED   |        41051 |
+| def456...        | ENDED   |        40117 |
+| ghi789...        | ENDED   |        87747 |
++------------------+---------+--------------+
+Time: 15.2ms
+```
+
+Override with `--format client:vertical` or set at runtime: `.format = client:vertical`
+
+The default format is `client:auto` in all modes (interactive REPL, single-query, and pipe mode).
+
+### Server-Side Rendering
+
+Pass any Firebolt output format name (without a `client:` prefix) to receive raw server-rendered output:
+
+```
+fb --format PSQL "SELECT 42"
+fb --format JSON_Compact "SELECT 42"
+fb --format TabSeparatedWithNamesAndTypes "SELECT 42"
+```
+
+Supported formats: `PSQL`, `JSON_Compact`, `JSON_CompactLimited`, `JSONLines_Compact`, `TabSeparatedWithNamesAndTypes`.
+
+### Changing Format at Runtime
+
+```
+.format = client:vertical     -- client-side vertical
+.format = client:horizontal   -- client-side horizontal
+.format =                     -- reset to default (client:auto)
+```
+
+For server-side formats use `--format` on the command line or `set output_format=PSQL;` at runtime.
+
+## Client Settings
+
+Settings that only affect the CLI use the `.setting = value` syntax:
+
+```
+.format = client:auto         -- client-side rendering (default)
+.format = client:vertical     -- always vertical layout
+.format = client:horizontal   -- always horizontal layout
+.completion = off             -- disable tab completion
+.completion = on              -- re-enable tab completion
+.format                       -- show current format
+.completion                   -- show current completion state
 ```
 
 ## Set and Unset
 
-In interactive mode one can dynamically update extra arguments:
-- `set key=value;` to set the argument;
-- `unset key;` to unset it.
+Change server-side query parameters at runtime without restarting:
+
+```sql
+set database = my_db;
+set engine = my_engine;
+set enable_result_cache = false;
+unset enable_result_cache;
+```
+
+Active non-default settings are shown in grey between the query echo and its result.
+
+## Defaults
+
+Save your preferred flags so you don't have to repeat them:
 
 ```
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db
-QUERY: select E'qqq';
- ?column?
----------
-      qqq
-
-Time: 40.745ms
-
-=> set format = Vertical;
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db
-QUERY: select E'qqq';
-Row 1:
-──────
-?column?: qqq
-
-Time: 38.888ms
-
-=> set cool_mode=disabled;
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db&cool_mode=disabled
-QUERY: select E'qqq';
-Unknown setting cool_mode
-
-Time: 36.802ms
-
-=> unset cool_mode
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db
-QUERY: select E'qqq';
-Row 1:
-──────
-?column?: qqq
-
-Time: 39.395ms
-
-=> set enable_result_cache=disabled;
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db&enable_result_cache=disabled
-QUERY: select E'qqq';
-Row 1:
-──────
-qqq: qqq
-
-Time: 41.671ms
-
-=> unset enable_result_cache;
-=> select E'qqq';
-URL: http://localhost:8123/?database=local_dev_db
-QUERY: select E'qqq';
-Row 1:
-──────
-?column?: qqq
-
-Time: 39.453ms
-
-=> 
+fb --host my-host.firebolt.io --update-defaults
 ```
+
+Saved defaults are stored in `~/.firebolt/fb_config` and merged with any flags you provide at run time. The `--format` flag is intentionally not saved to defaults — always specify it explicitly if you need a non-default format.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All queries succeeded |
+| `1` | One or more queries failed (bad SQL, permission denied, HTTP 400) |
+| `2` | System/infrastructure error (connection refused, auth failure, HTTP 4xx/5xx) |
+
+## Parameterized Queries
+
+Use `-p` / `--param` to pass positional parameters in non-interactive mode. The first `-p` value becomes `$1`, the second `$2`, and so on.
+
+```bash
+fb --core -p 42 -p 'Alice' \
+   "SELECT * FROM users WHERE id = \$1 AND name = \$2"
+```
+
+Parameters are automatically typed from the value:
+
+| Value passed | JSON sent | Example |
+|---|---|---|
+| Integer | number | `-p 42` → `42` |
+| Float | number | `-p 3.14` → `3.14` |
+| `true` / `false` | boolean | `-p true` → `true` |
+| `NULL` | null | `-p NULL` → `null` |
+| Anything else | string | `-p hello` → `"hello"` |
+
+Works in all non-interactive modes:
+
+```bash
+# Single-query
+fb --core -p 10 -p 20 "SELECT \$1 + \$2"
+
+# Pipe mode
+echo "SELECT \$1, \$2;" | fb --core -p hello -p world
+
+# With a file
+/run @query.sql   # in REPL (use set/unset for runtime params instead)
+```
+
+Firebolt validates and escapes parameter values server-side, so they are safe against SQL injection.
+
+## Scripting
+
+### stdout vs stderr
+
+Query results are always written to **stdout**. Error messages are written to **stderr**. Timing statistics follow the table on **stdout** for client-side formats; server-side formats produce no timing output. You can redirect them independently:
+
+```bash
+# Save server-rendered output (no stats)
+fb --core --format TabSeparatedWithNamesAndTypes "SELECT * FROM my_table" > results.tsv
+
+# Save client-side table + stats together
+fb --core "SELECT * FROM my_table" > results.txt
+
+# Save only results, discard stats (stderr)
+fb --core "SELECT * FROM my_table" > results.txt 2>/dev/null
+```
+
+### JSON output
+
+Use `JSON_Compact` for structured output that is easy to process with tools like `jq`:
+
+```bash
+fb --core --format JSON_Compact "SELECT 1 AS n, 'hello' AS msg"
+# {"meta":[{"name":"n","type":"int"},{"name":"msg","type":"text"}],"data":[[1,"hello"]],...}
+
+# Extract with jq
+fb --core --format JSON_Compact "SELECT count(*) AS n FROM my_table" \
+  | jq '.data[0][0]'
+```
+
+Use `JSONLines_Compact` for streaming-friendly line-delimited JSON (one message per line):
+
+```bash
+fb --core --format JSONLines_Compact "SELECT 42 AS value" \
+  | grep '^{"message_type":"data"' \
+  | jq '.data[0][0]'
+```
+
+### Exit codes in scripts
+
+```bash
+fb --core "SELECT ..."
+case $? in
+  0) echo "ok" ;;
+  1) echo "query error — check your SQL" ;;
+  2) echo "system error — check connection or credentials" ;;
+esac
+```
+
+```bash
+# Fail fast on any error
+set -e
+fb --core "INSERT INTO log SELECT now(), 'start';"
+fb --core "SELECT count(*) FROM my_table;"
+fb --core "INSERT INTO log SELECT now(), 'done';"
+```
+
+### Pipe mode
+
+When stdin is not a terminal, fb reads queries line-by-line. All queries are executed even if one fails; the exit code reflects the worst failure:
+
+```bash
+{
+  echo "SELECT 1;"
+  echo "SELECT 2;"
+  echo "SELECT 3;"
+} | fb --core --format TabSeparatedWithNamesAndTypes
+```
+
+## Firebolt Core
+
+`--core` is a shortcut for `--host localhost:3473 --database firebolt` with no authentication required:
+
+```
+fb --core
+fb --core "SELECT 42"
+```
+
+## Authentication
+
+### JWT
+
+```
+fb --jwt 'eyJhbGci...'
+fb --jwt-from-file   # reads ~/.firebolt/jwt
+```
+
+### Service Account
+
+```
+fb --sa-id <id> --sa-secret <secret> --oauth-env app \
+   --host <account_id>.api.us-east-1.app.firebolt.io \
+   -d <database>
+```
+
+The token is cached in `~/.firebolt/fb_sa_token` and reused for up to 30 minutes.
+
+Read more: [Firebolt Service Accounts](https://docs.firebolt.io/guides/managing-your-organization/service-accounts)
+
+## All Flags
+
+```
+Usage: fb [OPTIONS] [query...]
+
+Positional arguments:
+  query                         Query to execute (starts REPL if omitted)
+
+Optional arguments:
+  -c, --command COMMAND         Run a single command and exit
+  -C, --core                    Connect to Firebolt Core (localhost:3473)
+  -h, --host HOSTNAME           Hostname and port
+  -d, --database DATABASE       Database name
+  -f, --format FORMAT           Output format (client:auto, client:vertical,
+                                client:horizontal, PSQL, JSON_Compact,
+                                JSONLines_Compact, TabSeparatedWithNamesAndTypes, ...)
+  -e, --extra NAME=VALUE        Extra query parameters (repeatable)
+  -p, --params VALUE            Query parameter: first -p is $1, second is $2, ...
+                                Values auto-typed: int, float, bool, NULL, or string
+  -l, --label LABEL             Query label for tracking
+  -j, --jwt JWT                 JWT token for authentication
+  --sa-id SA-ID                 Service Account ID
+  --sa-secret SA-SECRET         Service Account Secret
+  --jwt-from-file               Load JWT from ~/.firebolt/jwt
+  --oauth-env ENV               OAuth environment: app or staging (default: staging)
+  -v, --verbose                 Verbose output (shows URL, query text)
+  --hide-pii                    Hide URLs containing query parameters
+  --no-color                    Disable syntax highlighting
+  --no-completion               Disable tab completion
+  --completion-cache-ttl SECS   Schema cache TTL in seconds (default: 300)
+  --min-col-width N             Min column width before vertical mode (default: 15)
+  --max-cell-length N           Max cell content length before truncation (default: 1000)
+  --update-defaults             Save current flags as defaults
+  -V, --version                 Print version
+  --help                        Show help
+```
+
+## Files
+
+| Path | Purpose |
+|------|---------|
+| `~/.firebolt/fb_config` | Saved defaults (YAML) |
+| `~/.firebolt/fb_history` | REPL history (up to 10,000 entries) |
+| `~/.firebolt/fb_sa_token` | Cached service account token |
+| `~/.firebolt/jwt` | JWT token file (used with `--jwt-from-file`) |
 
 ## License
 

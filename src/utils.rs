@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::io::stderr;
 use std::io::Write;
@@ -30,6 +31,13 @@ pub fn history_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 // Get sa_token path on disk.
 pub fn sa_token_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(init_root_path()?.join("fb_sa_token"))
+}
+
+/// Get path for temporary CSV file in system temp directory
+pub fn temp_csv_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut path = env::temp_dir();
+    path.push(format!("fb_result_{}.csv", std::process::id()));
+    Ok(path)
 }
 
 // Format remaining time for token validity
@@ -82,5 +90,13 @@ mod tests {
 
         let sa_token = sa_token_path().unwrap();
         assert!(sa_token.ends_with("fb_sa_token"));
+    }
+
+    #[test]
+    fn test_temp_csv_path() {
+        let path = temp_csv_path().unwrap();
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert!(file_name.starts_with("fb_result_"));
+        assert!(file_name.ends_with(".csv"));
     }
 }
