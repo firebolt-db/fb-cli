@@ -106,12 +106,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - rust_arch: x86_64
-            artifact_arch: amd64
-            runs-on: macos-13
           - rust_arch: aarch64
             artifact_arch: arm64
-            runs-on: macos-latest
+            runs-on: macos-26
+          - rust_arch: x86_64
+            artifact_arch: amd64
+            runs-on: macos-26-intel
     name: Build macOS binary for ${{ matrix.artifact_arch }}
     runs-on: ${{ matrix.runs-on }}
 
