@@ -62,6 +62,10 @@ pub struct Args {
     #[serde(skip_serializing, skip_deserializing)]
     pub sa_secret: String,
 
+    #[options(no_short, help = "Account name for Service Account authentication")]
+    #[serde(skip_serializing, skip_deserializing)]
+    pub account_name: String,
+
     #[options(no_short, help = "Load JWT from file (~/.firebolt/jwt)")]
     #[serde(default)]
     pub jwt_from_file: bool,
@@ -149,9 +153,19 @@ pub fn get_args() -> Result<Args, Box<dyn std::error::Error>> {
         serde_yaml::from_str("")?
     };
 
-    let mut args = Args::parse_args_default_or_exit();
+    let args_vec: Vec<String> = std::env::args().skip(1).collect();
+    let mut args = match Args::parse_args_default(&args_vec) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(2);
+        }
+    };
 
     args.extra = normalize_extras(args.extra, true)?;
+
+    // Auto-load saved credentials
+    crate::auth::load_saved_credentials(&mut args)?;
 
     args.jwt_from_file = args.jwt_from_file || defaults.jwt_from_file;
     if args.jwt_from_file {
@@ -234,10 +248,24 @@ pub fn get_url(args: &Args) -> String {
     };
     let advanced_mode = if is_localhost { "" } else { "&advanced_mode=1" };
 
-    format!(
-        "{protocol}://{host}/?{database}{query_label}{extra}{output_format}{advanced_mode}",
-        host = args.host
-    )
+    // Build all query parameters
+    let all_params = format!("{database}{query_label}{extra}{output_format}{advanced_mode}");
+
+    // Check if host already contains query parameters (e.g., ?engine=name)
+    // If yes, append with &, otherwise start with /?
+    let params = if args.host.contains('?') {
+        // Host has query params, strip leading & from our params
+        all_params.strip_prefix('&').unwrap_or(&all_params)
+    } else {
+        // Host has no query params, use /?
+        all_params.as_str()
+    };
+
+    if args.host.contains('?') {
+        format!("{protocol}://{host}&{params}", host = args.host)
+    } else {
+        format!("{protocol}://{host}/?{params}", host = args.host)
+    }
 }
 
 #[cfg(test)]

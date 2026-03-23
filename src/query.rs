@@ -172,14 +172,30 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
                                 let base_url = &header_str[..pos];
                                 let query_part = &header_str[pos+1..];
 
-                                // Update the context URL with just the base part
-                                context.args.host = base_url.to_string();
+                                // Separate engine parameter from other parameters
+                                let mut engine_param: Option<String> = None;
+                                let mut other_params: Vec<&str> = Vec::new();
 
-                                // Process each query parameter
                                 for param in query_part.split('&') {
                                     if !param.is_empty() {
-                                        set_args(context, format!("set {};", param).as_str())?;
+                                        if param.starts_with("engine=") {
+                                            engine_param = Some(param.to_string());
+                                        } else {
+                                            other_params.push(param);
+                                        }
                                     }
+                                }
+
+                                // Set host with engine parameter if present
+                                if let Some(engine) = engine_param {
+                                    context.args.host = format!("{}?{}", base_url, engine);
+                                } else {
+                                    context.args.host = base_url.to_string();
+                                }
+
+                                // Process other query parameters
+                                for param in other_params {
+                                    set_args(context, format!("set {};", param).as_str())?;
                                 }
                             } else {
                                 // No query parameters, just set the URL

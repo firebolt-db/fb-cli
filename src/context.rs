@@ -7,6 +7,22 @@ pub struct ServiceAccountToken {
     pub sa_secret: String,
     pub token: String,
     pub until: u64,
+    #[serde(default = "default_oauth_env")]
+    pub oauth_env: String,
+}
+
+fn default_oauth_env() -> String {
+    "app".to_string()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SavedCredentials {
+    pub sa_id: String,
+    pub sa_secret: String,
+    pub oauth_env: String,
+    pub account_name: String,
+    pub host: Option<String>,
+    pub database: Option<String>,
 }
 
 pub struct Context {
