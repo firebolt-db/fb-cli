@@ -14,8 +14,12 @@ jobs:
   build-static:
     strategy:
       matrix:
-        arch: [ x86_64, aarch64 ]
-    name: Build Static Binary for ${{ matrix.arch }}
+        include:
+          - rust_arch: x86_64
+            artifact_arch: amd64
+          - rust_arch: aarch64
+            artifact_arch: arm64
+    name: Build Static Binary for ${{ matrix.artifact_arch }}
     runs-on: ubuntu-latest
 
     steps:
@@ -31,7 +35,7 @@ jobs:
         sudo apt-get install -y musl-tools
 
     - name: Download musl-cross toolchain
-      if: matrix.arch == 'aarch64'
+      if: matrix.rust_arch == 'aarch64'
       run: |
         TARGET_ARCH="aarch64-unknown-linux-musl"
         TOOLCHAIN_URL="https://github.com/cross-tools/musl-cross/releases/download/${MUSL_CROSS_VERSION}/${TARGET_ARCH}.tar.xz"
@@ -51,7 +55,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{ matrix.arch }}-unknown-linux-musl
+        targets: ${{ matrix.rust_arch }}-unknown-linux-musl
         
     - name: Cache cargo registry
       uses: actions/cache@v3
@@ -60,17 +64,17 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-${{ matrix.rust_arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-${{ matrix.arch }}-cargo-
+          ${{ runner.os }}-${{ matrix.rust_arch }}-cargo-
 
     - name: Build static binary
       run: |
-        cargo build --release --target "${{ matrix.arch }}-unknown-linux-musl" --locked
+        cargo build --release --target "${{ matrix.rust_arch }}-unknown-linux-musl" --locked
 
     - name: Verify static linking with ldd
       run: |
-        BINARY_PATH="target/${{ matrix.arch }}-unknown-linux-musl/release/fb"
+        BINARY_PATH="target/${{ matrix.rust_arch }}-unknown-linux-musl/release/fb"
 
         if ldd "$BINARY_PATH" 2>&1 | grep -qF "not a dynamic executable"; then
           echo "✅ Binary '$BINARY_PATH' is statically linked." >> "$GITHUB_STEP_SUMMARY"
@@ -84,16 +88,70 @@ jobs:
 
     - name: Strip binary
       run: |
-        ${STRIP_PREFIX}strip "target/${{ matrix.arch }}-unknown-linux-musl/release/fb"
+        ${STRIP_PREFIX}strip "target/${{ matrix.rust_arch }}-unknown-linux-musl/release/fb"
 
     - name: Move binary into artifacts directory
       run: |
         mkdir -p artifacts
-        cp "target/${{ matrix.arch }}-unknown-linux-musl/release/fb" "artifacts/fb-linux-static-${{ matrix.arch }}"
+        cp "target/${{ matrix.rust_arch }}-unknown-linux-musl/release/fb" "artifacts/fb-linux-static-${{ matrix.artifact_arch }}"
 
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
-        name: fb-linux-static-${{ matrix.arch }}
-        path: artifacts/fb-linux-static-${{ matrix.arch }}
+        name: fb-linux-static-${{ matrix.artifact_arch }}
+        path: artifacts/fb-linux-static-${{ matrix.artifact_arch }}
+        retention-days: 7
+
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - rust_arch: x86_64
+            artifact_arch: amd64
+            runs-on: macos-13
+          - rust_arch: aarch64
+            artifact_arch: arm64
+            runs-on: macos-latest
+    name: Build macOS binary for ${{ matrix.artifact_arch }}
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        show-progress: 'false'
+        fetch-depth: 0
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.rust_arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.rust_arch }}-cargo-
+
+    - name: Build release binary
+      run: cargo build --release --locked
+
+    - name: Strip binary
+      run: strip target/release/fb
+
+    - name: Move binary into artifacts directory
+      run: |
+        mkdir -p artifacts
+        cp target/release/fb "artifacts/fb-darwin-${{ matrix.artifact_arch }}"
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: fb-darwin-${{ matrix.artifact_arch }}
+        path: artifacts/fb-darwin-${{ matrix.artifact_arch }}
         retention-days: 7
