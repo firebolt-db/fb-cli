@@ -68,17 +68,58 @@ Optional arguments:
 
 ## Install
 
-1) Install `cargo`: https://doc.rust-lang.org/cargo/getting-started/installation.html 
-    1) Add `source "$HOME/.cargo/env"` to your `~/.bashrc` (or `~/.zshrc`).
-2) Install `pkg-config`: `sudo apt install pkg-config` (a default dependency for Ubuntu)
-3) Install `openssl`: `sudo apt install libssl-dev` (a default dependency for Ubuntu)
-4) Clone & Build & Install:
-```
-git clone git@github.com:firebolt-db/fb-cli.git
-cd fb-cli
-cargo install --path . --locked
-```
-4) That's it: you should be able to run `fb` // or at least `~/.cargo/bin/fb` if cargo env isn't caught up.
+### Precompiled binaries (recommended)
+
+The easiest way to install `fb` is to download a release binary from [**GitHub Releases**](https://github.com/firebolt-db/fb-cli/releases/latest).
+
+1. Open the latest release and download the asset that matches your OS and CPU:
+
+   | Asset | Platform |
+   | ----- | -------- |
+   | `fb-linux-static-amd64` | Linux amd64 (Intel/AMD 64-bit) |
+   | `fb-linux-static-arm64` | Linux arm64 |
+   | `fb-darwin-amd64` | macOS Intel (amd64) |
+   | `fb-darwin-arm64` | macOS Apple Silicon (arm64) |
+
+2. Make it executable and install it as `fb` on your `PATH` (use the exact filename you downloaded):
+
+   ```sh
+   chmod +x ./fb-linux-static-amd64
+   sudo mv ./fb-linux-static-amd64 /usr/local/bin/fb
+   ```
+
+   Or install to your user directory (no `sudo`):
+
+   ```sh
+   mkdir -p ~/.local/bin
+   chmod +x ./fb-linux-static-amd64
+   mv ./fb-linux-static-amd64 ~/.local/bin/fb
+   ```
+
+   Ensure `~/.local/bin` is on your `PATH` (e.g. in `~/.bashrc` or `~/.zshrc`).
+
+3. Run `fb --version` to confirm.
+
+### Build from source (alternative)
+
+Use this if you prefer to compile locally or need a platform not covered by release binaries.
+
+1. Install [Rust and `cargo`](https://doc.rust-lang.org/cargo/getting-started/installation.html). Add `source "$HOME/.cargo/env"` to `~/.bashrc` or `~/.zshrc` if the installer suggests it.
+2. On Ubuntu/Debian, install build dependencies:
+
+   ```sh
+   sudo apt install pkg-config libssl-dev
+   ```
+
+3. Clone the repo and install:
+
+   ```sh
+   git clone git@github.com:firebolt-db/fb-cli.git
+   cd fb-cli
+   cargo install --path . --locked
+   ```
+
+4. Run `fb` (or `~/.cargo/bin/fb` if your shell has not picked up Cargo’s bin directory yet).
 
 ## Shortcuts
 

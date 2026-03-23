@@ -57,17 +57,29 @@ jobs:
             echo "needs_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download x86_64 binary
+      - name: Download Linux amd64 binary
         if: steps.compare_versions.outputs.needs_release
         uses: actions/download-artifact@v4
         with:
-          name: fb-linux-static-x86_64
+          name: fb-linux-static-amd64
 
-      - name: Download aarch64 binary
+      - name: Download Linux arm64 binary
         if: steps.compare_versions.outputs.needs_release
         uses: actions/download-artifact@v4
         with:
-          name: fb-linux-static-aarch64
+          name: fb-linux-static-arm64
+
+      - name: Download macOS amd64 binary
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/download-artifact@v4
+        with:
+          name: fb-darwin-amd64
+
+      - name: Download macOS arm64 binary
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/download-artifact@v4
+        with:
+          name: fb-darwin-arm64
 
       - name: Generate release notes
         if: steps.compare_versions.outputs.needs_release
@@ -86,24 +98,46 @@ jobs:
           release_name: Release v${{ steps.main_branch.outputs.version }}
           body_path: release_notes.md
 
-      - name: Upload x86_64 binary onto release
+      - name: Upload Linux amd64 binary onto release
         if: steps.compare_versions.outputs.needs_release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: fb-linux-static-x86_64
-          asset_name: fb-linux-static-x86_64
+          asset_path: fb-linux-static-amd64
+          asset_name: fb-linux-static-amd64
           asset_content_type: application/octet-stream
 
-      - name: Upload aarch64 binary onto release
+      - name: Upload Linux arm64 binary onto release
         if: steps.compare_versions.outputs.needs_release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: fb-linux-static-aarch64
-          asset_name: fb-linux-static-aarch64
+          asset_path: fb-linux-static-arm64
+          asset_name: fb-linux-static-arm64
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS amd64 binary onto release
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: fb-darwin-amd64
+          asset_name: fb-darwin-amd64
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS arm64 binary onto release
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: fb-darwin-arm64
+          asset_name: fb-darwin-arm64
           asset_content_type: application/octet-stream
