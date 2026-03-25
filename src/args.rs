@@ -95,6 +95,10 @@ pub struct Args {
     #[serde(default)]
     pub no_spinner: bool,
 
+    #[options(no_short, help = "Store secrets in file instead of OS keychain")]
+    #[serde(default)]
+    pub no_keyring: bool,
+
     #[options(no_short, help = "Update default configuration values")]
     #[serde(skip_serializing, skip_deserializing)]
     pub update_defaults: bool,

@@ -27,9 +27,9 @@ pub fn history_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(init_root_path()?.join("fb_history"))
 }
 
-// Get sa_token path on disk.
-pub fn sa_token_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(init_root_path()?.join("fb_sa_token"))
+// Get secrets file path on disk (used with --no-keyring).
+pub fn secrets_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(init_root_path()?.join("fb_secrets"))
 }
 
 // Get credentials storage path on disk.
@@ -85,7 +85,7 @@ mod tests {
         let history = history_path().unwrap();
         assert!(history.ends_with("fb_history"));
 
-        let sa_token = sa_token_path().unwrap();
-        assert!(sa_token.ends_with("fb_sa_token"));
+        let secrets = secrets_path().unwrap();
+        assert!(secrets.ends_with("fb_secrets"));
     }
 }

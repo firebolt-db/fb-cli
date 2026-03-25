@@ -7,7 +7,7 @@ use tokio::{select, signal, task};
 use tokio_util::sync::CancellationToken;
 
 use crate::args::normalize_extras;
-use crate::auth::authenticate_service_account;
+use crate::auth::maybe_authenticate;
 use crate::context::Context;
 use crate::utils::spin;
 use crate::FIREBOLT_PROTOCOL_VERSION;
@@ -88,9 +88,7 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         return Ok(());
     }
 
-    if !context.args.sa_id.is_empty() || !context.args.sa_secret.is_empty() {
-        authenticate_service_account(context).await?;
-    }
+    maybe_authenticate(context).await?;
 
     if context.args.verbose {
         eprintln!("URL: {}", context.url);
@@ -110,11 +108,9 @@ pub async fn query(context: &mut Context, query_text: String) -> Result<(), Box<
         .header("Firebolt-Protocol-Version", FIREBOLT_PROTOCOL_VERSION)
         .body(query_text);
 
-    if let Some(sa_token) = &context.sa_token {
-        request = request.header("authorization", format!("Bearer {}", sa_token.token));
-    }
-
-    if !context.args.jwt.is_empty() {
+    if let Some(token) = context.access_token() {
+        request = request.header("authorization", format!("Bearer {}", token));
+    } else if !context.args.jwt.is_empty() {
         request = request.header("authorization", format!("Bearer {}", context.args.jwt));
     }
 
