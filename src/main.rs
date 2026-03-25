@@ -36,6 +36,7 @@ fn print_help() {
     println!("    fb auth                      Interactive authentication setup");
     println!("    fb auth check                Show authentication status");
     println!("    fb auth clear                Clear saved credentials");
+    println!("    fb auth token                Print current access token");
     println!();
     println!("CONFIGURATION:");
     println!("    fb use database <name>       Set default database");
@@ -57,6 +58,7 @@ fn print_help() {
     println!("    --verbose                    Enable verbose output");
     println!("    --concise                    Suppress time statistics");
     println!("    --no-spinner                 Disable spinner");
+    println!("    --no-keyring                 Store secrets in file instead of OS keychain");
     println!("    --version                    Print version");
     println!("    --help                       Show this help message");
     println!();
@@ -99,18 +101,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Check for auth subcommands (use positional words instead of flags)
         if args.query.len() > 1 {
             match args.query[1].as_str() {
-                "check" | "status" => return auth::show_auth_status(),
-                "clear" | "logout" => return auth::clear_auth(),
+                "check" | "status" => return auth::show_auth_status(args.no_keyring),
+                "clear" | "logout" => return auth::clear_auth(args.no_keyring),
+                "token" => return auth::print_access_token(args.no_keyring).await,
                 _ => {
                     eprintln!("Unknown auth subcommand: {}", args.query[1]);
-                    eprintln!("Available: fb auth check, fb auth clear");
+                    eprintln!("Available: fb auth check, fb auth clear, fb auth token");
                     std::process::exit(1);
                 }
             }
         }
 
-        // Interactive mode only
-        return auth::interactive_auth_setup().await;
+        return auth::interactive_auth_setup(args.no_keyring).await;
     }
 
     // Handle 'use' subcommand for setting database/engine
@@ -124,11 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args.query[1].as_str() {
             "database" => {
                 let database_name = args.query[2].clone();
-                return auth::set_default_database(database_name).await;
+                return auth::set_default_database(database_name, args.no_keyring).await;
             }
             "engine" => {
                 let engine_name = args.query[2].clone();
-                return auth::set_default_engine(engine_name).await;
+                return auth::set_default_engine(engine_name, args.no_keyring).await;
             }
             _ => {
                 eprintln!("Unknown use target: {}", args.query[1]);
