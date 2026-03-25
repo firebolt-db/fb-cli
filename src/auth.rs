@@ -14,8 +14,7 @@ use crate::utils::{credentials_path, format_remaining_time, secrets_path, spin};
 use std::io::{self, Write};
 
 const KEYRING_SERVICE: &str = "fb-cli";
-/// TODO: Replace with the real Firebolt browser OAuth client ID before shipping.
-const BROWSER_CLIENT_ID: &str = "REPLACE_WITH_CLIENT_ID";
+const BROWSER_CLIENT_ID: &str = "f6ktrYgUuMtzmAw3EXHSsvElt7fdk2Xi";
 
 // ─── Cached token JSON (stored in keyring / secrets file) ────────────────────
 
@@ -34,8 +33,9 @@ struct OidcConfig {
 }
 
 async fn discover_oidc_config(oauth_env: &str) -> Result<OidcConfig, Box<dyn std::error::Error>> {
+    // Browser flow uses idp.*.firebolt.io which supports OIDC discovery.
     let url = format!(
-        "https://id.{}.firebolt.io/.well-known/openid-configuration",
+        "https://idp.{}.firebolt.io/.well-known/openid-configuration",
         oauth_env
     );
     let client = reqwest::Client::new();
@@ -178,8 +178,20 @@ async fn authenticate_browser(
     let hash = Sha256::digest(code_verifier.as_bytes());
     let code_challenge = general_purpose::URL_SAFE_NO_PAD.encode(hash);
 
-    // Bind local callback server on a random port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Try binding to one of several candidate ports for the callback server.
+    // Using fixed candidates instead of :0 keeps redirect_uri predictable
+    // across retries and avoids firewall/browser trust issues with ephemeral ports.
+    const CALLBACK_PORTS: [u16; 5] = [27847, 29156, 31082, 33491, 35724];
+    let listener = {
+        let mut bound = None;
+        for &p in &CALLBACK_PORTS {
+            match tokio::net::TcpListener::bind(("127.0.0.1", p)).await {
+                Ok(l) => { bound = Some(l); break; }
+                Err(_) => continue,
+            }
+        }
+        bound.ok_or("All callback ports are busy. Free up one of: 27847, 29156, 31082, 33491, 35724")?
+    };
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://localhost:{}/callback", port);
 
@@ -235,10 +247,10 @@ async fn authenticate_browser(
         + expires_in;
 
     let cached = CachedTokenJson { token: token_resp.access_token.clone(), until };
-    keyring_store("access_token", &serde_json::to_string(&cached)?, no_keyring)?;
+    keyring_store("browser_access_token", &serde_json::to_string(&cached)?, no_keyring)?;
 
     if let Some(refresh) = &token_resp.refresh_token {
-        keyring_store("refresh_token", refresh, no_keyring)?;
+        keyring_store("browser_refresh_token", refresh, no_keyring)?;
     }
 
     context.auth_token = Some(CachedToken { token: token_resp.access_token, until });
@@ -251,8 +263,8 @@ async fn refresh_browser_token(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let no_keyring = context.args.no_keyring;
 
-    let refresh_token = keyring_load("refresh_token", no_keyring)?
-        .ok_or("No refresh token found. Please run 'fb auth' again.")?;
+    let refresh_token = keyring_load("browser_refresh_token", no_keyring)?
+        .ok_or("Session expired. Please run 'fb auth' to log in again.")?;
 
     let mut params = HashMap::new();
     params.insert("grant_type", "refresh_token");
@@ -287,10 +299,10 @@ async fn refresh_browser_token(
         + expires_in;
 
     let cached = CachedTokenJson { token: token_resp.access_token.clone(), until };
-    keyring_store("access_token", &serde_json::to_string(&cached)?, no_keyring)?;
+    keyring_store("browser_access_token", &serde_json::to_string(&cached)?, no_keyring)?;
 
     if let Some(new_refresh) = &token_resp.refresh_token {
-        keyring_store("refresh_token", new_refresh, no_keyring)?;
+        keyring_store("browser_refresh_token", new_refresh, no_keyring)?;
     }
 
     context.auth_token = Some(CachedToken { token: token_resp.access_token, until });
@@ -304,7 +316,7 @@ async fn authenticate_browser_from_keyring(
     let no_keyring = context.args.no_keyring;
 
     // Try cached access token first
-    if let Some(token_json) = keyring_load("access_token", no_keyring)? {
+    if let Some(token_json) = keyring_load("browser_access_token", no_keyring)? {
         if let Ok(cached) = serde_json::from_str::<CachedTokenJson>(&token_json) {
             let valid_until =
                 SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(cached.until);
@@ -317,7 +329,11 @@ async fn authenticate_browser_from_keyring(
         }
     }
 
-    // Token expired or missing — refresh
+    // Token expired or missing — check refresh token before attempting refresh
+    if keyring_load("browser_refresh_token", no_keyring)?.is_none() {
+        return Err("Session expired. Please run 'fb auth' to log in again.".into());
+    }
+
     let oidc = discover_oidc_config(oauth_env).await?;
     refresh_browser_token(context, &oidc).await
 }
@@ -355,7 +371,7 @@ pub async fn authenticate_service_account(
     let sa_id = args.sa_id.clone();
 
     // Check keyring cache
-    if let Some(token_json) = keyring_load("access_token", no_keyring)? {
+    if let Some(token_json) = keyring_load("sa_access_token", no_keyring)? {
         if let Ok(cached) = serde_json::from_str::<CachedTokenJson>(&token_json) {
             let valid_until =
                 SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(cached.until);
@@ -374,6 +390,7 @@ pub async fn authenticate_service_account(
         }
     }
 
+    // Service Account flow uses id.*.firebolt.io directly (no OIDC discovery).
     let auth_url = format!(
         "https://id.{}.firebolt.io/oauth/token",
         context.args.oauth_env
@@ -436,7 +453,7 @@ pub async fn authenticate_service_account(
 
             // Cache in keyring
             let cached_json = CachedTokenJson { token: token_str.clone(), until };
-            keyring_store("access_token", &serde_json::to_string(&cached_json)?, no_keyring)?;
+            keyring_store("sa_access_token", &serde_json::to_string(&cached_json)?, no_keyring)?;
 
             if context.args.verbose {
                 eprintln!(
@@ -495,6 +512,86 @@ pub async fn maybe_authenticate(
     Ok(())
 }
 
+// ─── Account listing / selection ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct Account {
+    name: String,
+    region: String,
+}
+
+#[derive(Deserialize)]
+struct AccountsResponse {
+    accounts: Vec<Account>,
+}
+
+async fn list_accounts(
+    access_token: &str,
+    api_endpoint: &str,
+) -> Result<Vec<Account>, Box<dyn std::error::Error>> {
+    let url = format!("https://{}/web/v3/myAccounts", api_endpoint);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await?;
+        return Err(format!("Failed to list accounts: {}", text).into());
+    }
+
+    Ok(resp.json::<AccountsResponse>().await?.accounts)
+}
+
+async fn select_account_interactive(
+    access_token: &str,
+    api_endpoint: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let accounts = list_accounts(access_token, api_endpoint).await?;
+
+    if accounts.is_empty() {
+        return Err("No accounts found for this user.".into());
+    }
+
+    if accounts.len() == 1 {
+        println!("Using account: {} ({})", accounts[0].name, accounts[0].region);
+        return Ok(accounts[0].name.clone());
+    }
+
+    println!("\nAvailable accounts:");
+    for (i, account) in accounts.iter().enumerate() {
+        println!("  {}) {} ({})", i + 1, account.name, account.region);
+    }
+    println!();
+
+    loop {
+        print!("Select account [1]: ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        let idx: usize = if input.is_empty() {
+            1
+        } else {
+            match input.parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("Please enter a number between 1 and {}.", accounts.len());
+                    continue;
+                }
+            }
+        };
+
+        if idx >= 1 && idx <= accounts.len() {
+            return Ok(accounts[idx - 1].name.clone());
+        }
+        eprintln!("Please enter a number between 1 and {}.", accounts.len());
+    }
+}
+
 // ─── System engine discovery ──────────────────────────────────────────────────
 
 async fn discover_system_engine_url(
@@ -549,7 +646,8 @@ pub async fn create_context_from_credentials(
     }
 
     let saved_creds: SavedCredentials =
-        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)?;
+        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)
+            .map_err(|_| "No valid authentication session found. Run 'fb auth' to set up.")?;
 
     let mut sa_id = String::new();
     let mut sa_secret = String::new();
@@ -625,12 +723,6 @@ async fn setup_browser(
     oauth_env: &str,
     api_endpoint: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    print!("Enter account name (e.g., my_account): ");
-    io::stdout().flush()?;
-    let mut account_name = String::new();
-    io::stdin().read_line(&mut account_name)?;
-    let account_name = account_name.trim().to_string();
-
     let oidc = discover_oidc_config(oauth_env).await?;
 
     let temp_args = crate::args::Args {
@@ -644,7 +736,7 @@ async fn setup_browser(
         jwt: String::new(),
         sa_id: String::new(),
         sa_secret: String::new(),
-        account_name: account_name.clone(),
+        account_name: String::new(),
         jwt_from_file: false,
         oauth_env: oauth_env.to_string(),
         verbose: false,
@@ -668,6 +760,9 @@ async fn setup_browser(
         .as_ref()
         .map(|t| t.token.clone())
         .ok_or("Failed to obtain access token")?;
+
+    let account_name = select_account_interactive(&access_token, api_endpoint).await?;
+    temp_context.args.account_name = account_name.clone();
 
     println!("Discovering system engine endpoint...");
     let system_engine_url =
@@ -744,12 +839,6 @@ async fn setup_service_account(
     }
     let sa_secret = sa_secret.trim().to_string();
 
-    print!("Enter account name (e.g., my_account): ");
-    io::stdout().flush()?;
-    let mut account_name = String::new();
-    io::stdin().read_line(&mut account_name)?;
-    let account_name = account_name.trim().to_string();
-
     println!("\nAuthenticating...");
 
     let temp_args = crate::args::Args {
@@ -763,7 +852,7 @@ async fn setup_service_account(
         jwt: String::new(),
         sa_id: sa_id.clone(),
         sa_secret: sa_secret.clone(),
-        account_name: account_name.clone(),
+        account_name: String::new(),
         jwt_from_file: false,
         oauth_env: oauth_env.to_string(),
         verbose: false,
@@ -790,6 +879,9 @@ async fn setup_service_account(
 
     // Store SA secret in keyring
     keyring_store("sa_secret", &sa_secret, no_keyring)?;
+
+    let account_name = select_account_interactive(&access_token, api_endpoint).await?;
+    temp_context.args.account_name = account_name.clone();
 
     println!("Discovering system engine endpoint...");
     let system_engine_url =
@@ -943,7 +1035,8 @@ pub async fn set_default_database(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let creds_path = credentials_path()?;
     let saved_creds: SavedCredentials =
-        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)?;
+        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)
+            .map_err(|_| "No valid authentication session found. Run 'fb auth' to set up.")?;
 
     let system_engine_host = if let Some(host) = &saved_creds.host {
         if let Some(pos) = host.find("?engine=") { host[..pos].to_string() } else { host.clone() }
@@ -992,7 +1085,8 @@ pub async fn set_default_engine(
     }
 
     let mut saved_creds: SavedCredentials =
-        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)?;
+        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)
+            .map_err(|_| "No valid authentication session found. Run 'fb auth' to set up.")?;
 
     let system_engine_host = if let Some(host) = &saved_creds.host {
         if let Some(pos) = host.find("?engine=") { host[..pos].to_string() } else { host.clone() }
@@ -1045,8 +1139,14 @@ pub fn show_auth_status(no_keyring: bool) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
 
-    let saved_creds: SavedCredentials =
-        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)?;
+    let saved_creds: SavedCredentials = match serde_yaml::from_str(&fs::read_to_string(&creds_path)?) {
+        Ok(c) => c,
+        Err(_) => {
+            println!("No valid authentication session found.");
+            println!("Run 'fb auth' to set up authentication.");
+            return Ok(());
+        }
+    };
 
     match &saved_creds.auth_method {
         AuthMethod::ServiceAccount { sa_id } => {
@@ -1061,7 +1161,11 @@ pub fn show_auth_status(no_keyring: bool) -> Result<(), Box<dyn std::error::Erro
     println!("  Environment: {}", saved_creds.oauth_env);
 
     // Show cached token expiry
-    if let Ok(Some(token_json)) = keyring_load("access_token", no_keyring) {
+    let token_key = match &saved_creds.auth_method {
+        AuthMethod::Browser => "browser_access_token",
+        AuthMethod::ServiceAccount { .. } => "sa_access_token",
+    };
+    if let Ok(Some(token_json)) = keyring_load(token_key, no_keyring) {
         if let Ok(cached) = serde_json::from_str::<CachedTokenJson>(&token_json) {
             let valid_until =
                 SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(cached.until);
@@ -1097,6 +1201,10 @@ pub fn clear_auth(no_keyring: bool) -> Result<(), Box<dyn std::error::Error>> {
 
     // Clear keyring / secrets file
     keyring_delete("sa_secret", no_keyring);
+    keyring_delete("sa_access_token", no_keyring);
+    keyring_delete("browser_access_token", no_keyring);
+    keyring_delete("browser_refresh_token", no_keyring);
+    // Legacy keys (migration cleanup)
     keyring_delete("access_token", no_keyring);
     keyring_delete("refresh_token", no_keyring);
 
@@ -1112,8 +1220,13 @@ pub async fn print_access_token(
         std::process::exit(1);
     }
 
-    let saved_creds: SavedCredentials =
-        serde_yaml::from_str(&fs::read_to_string(&creds_path)?)?;
+    let saved_creds: SavedCredentials = match serde_yaml::from_str(&fs::read_to_string(&creds_path)?) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("No valid authentication session found. Run 'fb auth' first.");
+            std::process::exit(1);
+        }
+    };
 
     // Build a minimal context to use the auth machinery
     let host = saved_creds.host.clone().unwrap_or_default();
@@ -1137,7 +1250,11 @@ pub async fn print_access_token(
     }
 
     // For browser mode, the token may need to come from keyring directly
-    if let Some(token_json) = keyring_load("access_token", no_keyring)? {
+    let token_key = match &saved_creds.auth_method {
+        AuthMethod::Browser => "browser_access_token",
+        AuthMethod::ServiceAccount { .. } => "sa_access_token",
+    };
+    if let Some(token_json) = keyring_load(token_key, no_keyring)? {
         if let Ok(cached) = serde_json::from_str::<CachedTokenJson>(&token_json) {
             print!("{}", cached.token);
             return Ok(());
