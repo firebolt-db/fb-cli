@@ -81,6 +81,12 @@ jobs:
         with:
           name: fb-darwin-arm64
 
+      - name: Download Windows amd64 binary
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/download-artifact@v4
+        with:
+          name: fb-windows-amd64.exe
+
       - name: Generate release notes
         if: steps.compare_versions.outputs.needs_release
         id: release_notes
@@ -140,4 +146,15 @@ jobs:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: fb-darwin-arm64
           asset_name: fb-darwin-arm64
+          asset_content_type: application/octet-stream
+
+      - name: Upload Windows amd64 binary onto release
+        if: steps.compare_versions.outputs.needs_release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: fb-windows-amd64.exe
+          asset_name: fb-windows-amd64.exe
           asset_content_type: application/octet-stream

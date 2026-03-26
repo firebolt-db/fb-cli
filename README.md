@@ -80,23 +80,35 @@ The easiest way to install `fb` is to download a release binary from [**GitHub R
    | `fb-linux-static-arm64` | Linux arm64 |
    | `fb-darwin-amd64` | macOS Intel (amd64) |
    | `fb-darwin-arm64` | macOS Apple Silicon (arm64) |
+   | `fb-windows-amd64.exe` | Windows amd64 (Intel/AMD 64-bit) |
 
-2. Make it executable and install it as `fb` on your `PATH` (use the exact filename you downloaded):
+2. Install it on your `PATH`:
 
-   ```sh
-   chmod +x ./fb-linux-static-amd64
-   sudo mv ./fb-linux-static-amd64 /usr/local/bin/fb
-   ```
+   - Linux/macOS: make it executable and install it as `fb` (use the exact filename you downloaded):
 
-   Or install to your user directory (no `sudo`):
+     ```sh
+     chmod +x ./fb-linux-static-amd64
+     sudo mv ./fb-linux-static-amd64 /usr/local/bin/fb
+     ```
 
-   ```sh
-   mkdir -p ~/.local/bin
-   chmod +x ./fb-linux-static-amd64
-   mv ./fb-linux-static-amd64 ~/.local/bin/fb
-   ```
+     Or install to your user directory (no `sudo`):
 
-   Ensure `~/.local/bin` is on your `PATH` (e.g. in `~/.bashrc` or `~/.zshrc`).
+     ```sh
+     mkdir -p ~/.local/bin
+     chmod +x ./fb-linux-static-amd64
+     mv ./fb-linux-static-amd64 ~/.local/bin/fb
+     ```
+
+     Ensure `~/.local/bin` is on your `PATH` (e.g. in `~/.bashrc` or `~/.zshrc`).
+
+   - Windows (PowerShell): place `fb-windows-amd64.exe` somewhere on your `PATH` and optionally rename it to `fb.exe`:
+
+     ```powershell
+     New-Item -ItemType Directory -Force "$env:USERPROFILE\bin" | Out-Null
+     Move-Item .\fb-windows-amd64.exe "$env:USERPROFILE\bin\fb.exe"
+     ```
+
+     Ensure `%USERPROFILE%\bin` is included in your user `Path` environment variable.
 
 3. Run `fb --version` to confirm.
 
