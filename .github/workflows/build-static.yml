@@ -155,3 +155,52 @@ jobs:
         name: fb-darwin-${{ matrix.artifact_arch }}
         path: artifacts/fb-darwin-${{ matrix.artifact_arch }}
         retention-days: 7
+
+  build-windows:
+    strategy:
+      matrix:
+        include:
+          - rust_target: x86_64-pc-windows-msvc
+            artifact_arch: amd64
+    name: Build Windows binary for ${{ matrix.artifact_arch }}
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        show-progress: 'false'
+        fetch-depth: 0
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: ${{ matrix.rust_target }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~\.cargo\registry
+          ~\.cargo\git
+          target
+        key: ${{ runner.os }}-${{ matrix.rust_target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.rust_target }}-cargo-
+
+    - name: Build release binary
+      run: cargo build --release --target ${{ matrix.rust_target }} --locked
+
+    - name: Move binary into artifacts directory
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+        Copy-Item "target\${{ matrix.rust_target }}\release\fb.exe" "artifacts\fb-windows-${{ matrix.artifact_arch }}.exe"
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: fb-windows-${{ matrix.artifact_arch }}.exe
+        path: artifacts/fb-windows-${{ matrix.artifact_arch }}.exe
+        retention-days: 7
